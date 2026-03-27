@@ -74,7 +74,10 @@ func handleTripPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respBody := tripPreview.GetRoute()
+	respBody := previewTripResponse{
+		Route:     tripPreview.GetRoute(),
+		RideFares: tripPreview.GetRidefares(),
+	}
 
 	response := contracts.APIResponse{Data: respBody}
 	writeJSON(w, http.StatusCreated, response)

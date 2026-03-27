@@ -12,7 +12,10 @@ service DriverService {
 message RegisterDriverRequest {
   string driverID = 1;
   string packageSlug = 2;
+}
 
+message RegisterDriverResponse {
+  Driver driver = 1;
 }
 
 message Driver {
@@ -29,5 +32,3 @@ message Location {
   double latitude = 1;
   double longitude = 2;
 }
-
-message RegisterDriverResponse {}
