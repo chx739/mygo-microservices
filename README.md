@@ -1,18 +1,9 @@
-# "Microservices with Go" course project
+# Microservices with Go starter project
 
-This is the starter code for the "Microservices with Go" project.
+This is the Microservices with Go course project using Kubernetes for both local development and for production.
 
-## Project overview
-
-In this project‑driven course, you’ll build the backend microservices system for a Uber‑style ride‑sharing app from the ground up—using Go, Docker, and Kubernetes.
-
-By the end, you’ll have a fully deployed, horizontally scalable ride‑sharing system that’s ready for real traffic. Plus, you’ll walk away with reusable template for building future distributed projects—accelerating your path to become a lead engineer.
-
-Check it out at: https://www.selfmadeengineer.com/
-
-## Trip Scheduling Flow
-[![](https://mermaid.ink/img/pako:eNqNVt9v2jAQ_lcsP21qGvGjZSEPlSpaTX1YxWDVpAmpMvZBIkicOQ6UVf3fd4mdEgcKzQOK47v7vjt_d-aVcimAhnSW5vC3gJTDXcyWiiWzlOCTMaVjHmcs1eQpB3X49Xb88J1p2LLd4d4vFWdTUJuYw-HmnYo3oM5sH34fs10Cqf7Qb6oRFL-bnZLz5c3NnmRIRgrwteJGJmXOuTa2eyP0aFAPyXIyHtWO5YaxN7-PEoNJpNrM1nOSCw3Y_QuPWLq0nBvWl4h30fIos_Bhg5n6vMIVDTgVLyNN5II4LO9L65A8wrbyJimAyAkjwlbSBHBwENisQ2vl80T4pfezapbGRW1RHckkYaloILMNi9dsvgYXtHUQv2E-lXwF-hCccQ5ZE3sNiwZ0A_O2sjSw6oPTbB_nWbT3TB3dGEiykGrLlABBtCQTNp_H-sdP8sUwK3EmkGcS2-lnAQV8rUtwVCchGSvJIc8tJ2KoMGxDjxSZKIVapZZrpovc9_2j4nF7whGPifvM8jxepp8XkW2SzAQmOVKMZXoyF6_Nwq5bunetkLxp2HfIUQR8JQts5Bqz9DJGx3K1ZtZdHAVpCc9mZStkc3s-0WZtTFukOsGnB5QeE7u6PM4gKScQsozktmF_TmuN1qidUHZJa6q9V04m2RowlrV1SnbQc5GUq33YacFL_R2faHtPzxXt0ZN1O-6iXbRW1Zu4HxeiqjTJivk6ziPTcp-U1aXD-NPgZ46a21KL061Qj6kzc38_facarzCyv1tOdGgVk7OUpCipOSxjZEI9moBKWCzwKn8tQ8yojiCBGQ3xVTC1muEV_4Z2rNByuks5DbUqwKNKFsuIhgu2znFlZo79C1Cb4L36R8rmkoav9IWGvW_-1XVn0O_1-kE3GAyHgUd3-Lnb8fu9frc_xKfbvQ6CN4_-qyJ0_KDX7Q86QTDoDAfD66ve23_1IPGQ?type=png)](https://mermaid.live/edit#pako:eNqNVt9v2jAQ_lcsP21qGvGjZSEPlSpaTX1YxWDVpAmpMvZBIkicOQ6UVf3fd4mdEgcKzQOK47v7vjt_d-aVcimAhnSW5vC3gJTDXcyWiiWzlOCTMaVjHmcs1eQpB3X49Xb88J1p2LLd4d4vFWdTUJuYw-HmnYo3oM5sH34fs10Cqf7Qb6oRFL-bnZLz5c3NnmRIRgrwteJGJmXOuTa2eyP0aFAPyXIyHtWO5YaxN7-PEoNJpNrM1nOSCw3Y_QuPWLq0nBvWl4h30fIos_Bhg5n6vMIVDTgVLyNN5II4LO9L65A8wrbyJimAyAkjwlbSBHBwENisQ2vl80T4pfezapbGRW1RHckkYaloILMNi9dsvgYXtHUQv2E-lXwF-hCccQ5ZE3sNiwZ0A_O2sjSw6oPTbB_nWbT3TB3dGEiykGrLlABBtCQTNp_H-sdP8sUwK3EmkGcS2-lnAQV8rUtwVCchGSvJIc8tJ2KoMGxDjxSZKIVapZZrpovc9_2j4nF7whGPifvM8jxepp8XkW2SzAQmOVKMZXoyF6_Nwq5bunetkLxp2HfIUQR8JQts5Bqz9DJGx3K1ZtZdHAVpCc9mZStkc3s-0WZtTFukOsGnB5QeE7u6PM4gKScQsozktmF_TmuN1qidUHZJa6q9V04m2RowlrV1SnbQc5GUq33YacFL_R2faHtPzxXt0ZN1O-6iXbRW1Zu4HxeiqjTJivk6ziPTcp-U1aXD-NPgZ46a21KL061Qj6kzc38_facarzCyv1tOdGgVk7OUpCipOSxjZEI9moBKWCzwKn8tQ8yojiCBGQ3xVTC1muEV_4Z2rNByuks5DbUqwKNKFsuIhgu2znFlZo79C1Cb4L36R8rmkoav9IWGvW_-1XVn0O_1-kE3GAyHgUd3-Lnb8fu9frc_xKfbvQ6CN4_-qyJ0_KDX7Q86QTDoDAfD66ve23_1IPGQ)
-
+The goal of this template is to provide a stable starting point for building microservices with Go. 
+It comes basic, already configured Tiltfile, Dockerfiles, and a basic architecture for building microservices.
 
 ## Installation
 The project requires a couple tools to run, most of which are part of many developer's toolchains.
@@ -105,29 +96,33 @@ REGION: europe-west1 # change according to your location
 PROJECT_ID: <your-gcp-project-id>
 ```
 
-## 1. Add secrets.yaml file to the production folder
+## 1. Create and Switch to Application Namespace
+```bash
+# Create the namespace
+kubectl apply -f infra/production/k8s/namespace.yaml
 
-Production folder needs to contain a secrets.yaml for the production environment, you can just copy secrets from the development folder for now.
+# Switch to the namespace for subsequent commands
+kubectl config set-context --current --namespace=ride-sharing
+```
 
 ## 2. Build Docker Images
 Build all docker images and tag them accordingly to push to Artifact Registry.
 ```bash
-# Build the Api gateway 
+# Api gateway 
 docker build -t {REGION}-docker.pkg.dev/{PROJECT_ID}/ride-sharing/api-gateway:latest --platform linux/amd64 -f infra/production/docker/api-gateway.Dockerfile .
 
-# Build the Driver service 
+# Driver service 
 docker build -t {REGION}-docker.pkg.dev/{PROJECT_ID}/ride-sharing/driver-service:latest --platform linux/amd64 -f infra/production/docker/driver-service.Dockerfile .
 
-# Build the Trip service 
+# Trip service 
 docker build -t {REGION}-docker.pkg.dev/{PROJECT_ID}/ride-sharing/trip-service:latest --platform linux/amd64 -f infra/production/docker/trip-service.Dockerfile .
 
-# Build the Payment service 
+# Payment service 
 docker build -t {REGION}-docker.pkg.dev/{PROJECT_ID}/ride-sharing/payment-service:latest --platform linux/amd64 -f infra/production/docker/payment-service.Dockerfile .
 ```
 
 ## 3. Create a Artifact Registry repository
 Go to Google Cloud > Artifact Registry and manually create a docker repository to host your project images. 
-
 
 ## 4. Push the Docker images to artifact registry
 
@@ -151,9 +146,12 @@ gcloud container clusters get-credentials ride-sharing --region {REGION}--projec
 Next, upload each manifest by hand to make sure the correct order is maintained.
 
 ```bash
-# First, apply the app-config and secrets
+# First, apply the app-config secret
 kubectl apply -f infra/production/k8s/app-config.yaml
-kubectl apply -f infra/production/k8s/secrets.yaml
+
+# Storage
+kubectl apply -f infra/production/k8s/mongodb-deployment.yaml
+kubectl apply -f infra/production/k8s/mongodb-express-deployment.yaml
 
 # Jaeger
 kubectl apply -f infra/production/k8s/jaeger-deployment.yaml
@@ -161,11 +159,8 @@ kubectl apply -f infra/production/k8s/jaeger-deployment.yaml
 # RabbitMQ
 kubectl apply -f infra/production/k8s/rabbitmq-deployment.yaml
 
-# Wait for both Jaeger and RabbitMQ to be running successfully
-
 # Then, apply the services
 kubectl apply -f infra/production/k8s/api-gateway-deployment.yaml
-# Wait until the API is up and then do the next and so on...
 kubectl apply -f infra/production/k8s/driver-service-deployment.yaml
 kubectl apply -f infra/production/k8s/trip-service-deployment.yaml
 kubectl apply -f infra/production/k8s/payment-service-deployment.yaml

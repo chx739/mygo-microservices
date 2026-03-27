@@ -45,7 +45,7 @@ func (h *gRPCHandler) CreateTrip(ctx context.Context, req *pb.CreateTripRequest)
 	}
 
 	if err := h.publisher.PublishTripCreated(ctx); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to publish the trip event: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to publish the trip created event: %v", err)
 	}
 
 	return &pb.CreateTripResponse{
@@ -57,20 +57,19 @@ func (h *gRPCHandler) PreviewTrip(ctx context.Context, req *pb.PreviewTripReques
 	pickup := req.GetStartLocation()
 	destination := req.GetEndLocation()
 
-	// convert pb types to domain types
 	pickupCoord := &types.Coordinate{
-		Latitude:  pickup.GetLatitude(),
-		Longitude: pickup.GetLongitude(),
+		Latitude:  pickup.Latitude,
+		Longitude: pickup.Longitude,
 	}
-
 	destinationCoord := &types.Coordinate{
-		Latitude:  destination.GetLatitude(),
-		Longitude: destination.GetLongitude(),
+		Latitude:  destination.Latitude,
+		Longitude: destination.Longitude,
 	}
 
 	userID := req.GetUserID()
 
-	route, err := h.service.GetRoute(ctx, pickupCoord, destinationCoord)
+	// CHANGE THE LAST ARG TO "FALSE" if the OSRM API is not working right now
+	route, err := h.service.GetRoute(ctx, pickupCoord, destinationCoord, true)
 	if err != nil {
 		log.Println(err)
 		return nil, status.Errorf(codes.Internal, "failed to get route: %v", err)
@@ -85,6 +84,6 @@ func (h *gRPCHandler) PreviewTrip(ctx context.Context, req *pb.PreviewTripReques
 
 	return &pb.PreviewTripResponse{
 		Route:     route.ToProto(),
-		Ridefares: domain.ToRideFaresProto(fares),
+		RideFares: domain.ToRideFaresProto(fares),
 	}, nil
 }

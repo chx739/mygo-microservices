@@ -9,7 +9,6 @@ service TripService {
   rpc CreateTrip(CreateTripRequest) returns (CreateTripResponse);
 }
 
-
 message PreviewTripRequest {
   string userID = 1;
   Coordinate startLocation = 2;
@@ -19,7 +18,7 @@ message PreviewTripRequest {
 message PreviewTripResponse {
   string tripID = 1;
   Route route = 2;
-  repeated RideFare ridefares = 3;
+  repeated RideFare rideFares = 3;
 }
 
 message Coordinate {
@@ -43,7 +42,6 @@ message RideFare {
   string packageSlug = 3;
   double totalPriceInCents = 4;
 }
-
 
 message CreateTripRequest {
   string rideFareID = 1;

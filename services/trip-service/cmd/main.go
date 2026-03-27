@@ -17,25 +17,10 @@ import (
 	grpcserver "google.golang.org/grpc"
 )
 
-/*
-curl -X POST http://127.0.0.1:8081/trip/preview \
-  -H "Content-Type: application/json" \
-  -d '{
-    "userID": "12",
-    "destination": {
-      "latitude": 37.7960377140795,
-      "longitude": -122.42859007644311
-    },
-    "pickup": {
-      "latitude": 37.783678087129466,
-      "longitude": -122.40777303207217
-    }
-  }'
-*/
-
 var GrpcAddr = ":9093"
 
 func main() {
+	rabbitMqURI := env.GetString("RABBITMQ_URI", "amqp://guest:guest@rabbitmq:5672/")
 
 	inmemRepo := repository.NewInmemRepository()
 	svc := service.NewService(inmemRepo)
@@ -46,45 +31,41 @@ func main() {
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-		sig := <-sigCh
-		log.Printf("Received signal: %v. Shutting down...", sig)
+		<-sigCh
 		cancel()
 	}()
 
 	lis, err := net.Listen("tcp", GrpcAddr)
 	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
+		log.Fatalf("failed to listen: %v", err)
 	}
 
 	// RabbitMQ connection
-	rabbitMqURI := env.GetString("RABBITMQ_URI", "amqp://guest:guest@rabbitmq:5672/")
-
-	rabbmq, err := messaging.NewRabbitMQ(rabbitMqURI)
+	rabbitmq, err := messaging.NewRabbitMQ(rabbitMqURI)
 	if err != nil {
-		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+		log.Fatal(err)
 	}
-	defer rabbmq.Close()
+	defer rabbitmq.Close()
 
-	log.Println("starting RabbitMQ connection")
+	log.Println("Starting RabbitMQ connection")
 
-	publisher := events.NewTripPublisher(rabbmq)
+	publisher := events.NewTripEventPublisher(rabbitmq)
 
-	// starting the gRPC server
+	// Starting the gRPC server
 	grpcServer := grpcserver.NewServer()
 	grpc.NewGRPCHandler(grpcServer, svc, publisher)
 
-	log.Printf("starting gRPC server Trip service on port %s", lis.Addr().String())
+	log.Printf("Starting gRPC server Trip service on port %s", lis.Addr().String())
 
 	go func() {
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Printf("Failed to serve gRPC server: %v", err)
+			log.Printf("failed to serve: %v", err)
+			cancel()
 		}
-		cancel()
 	}()
 
 	// wait for the shutdown signal
 	<-ctx.Done()
-	log.Println("Shutting down gRPC server...")
+	log.Println("Shutting down the server...")
 	grpcServer.GracefulStop()
-	log.Println("gRPC server stopped")
 }

@@ -16,14 +16,13 @@ type RabbitMQ struct {
 func NewRabbitMQ(uri string) (*RabbitMQ, error) {
 	conn, err := amqp.Dial(uri)
 	if err != nil {
-
-		return nil, fmt.Errorf("Failed to connect to RabbitMQ: %v", err)
+		return nil, fmt.Errorf("failed to connect to RabbitMQ: %v", err)
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("Failed to create channel: %v", err)
+		return nil, fmt.Errorf("failed to create channel: %v", err)
 	}
 
 	rmq := &RabbitMQ{
@@ -32,9 +31,9 @@ func NewRabbitMQ(uri string) (*RabbitMQ, error) {
 	}
 
 	if err := rmq.setupExchangesAndQueues(); err != nil {
-		// Cleanup if setup fails
+		// Clean up if setup fails
 		rmq.Close()
-		return nil, fmt.Errorf("Failed to setup exchanges and queues: %v", err)
+		return nil, fmt.Errorf("failed to setup exchanges and queues: %v", err)
 	}
 
 	return rmq, nil
@@ -55,7 +54,7 @@ func (r *RabbitMQ) PublishMessage(ctx context.Context, routingKey string, messag
 func (r *RabbitMQ) setupExchangesAndQueues() error {
 	_, err := r.Channel.QueueDeclare(
 		"hello", // name
-		false,   // durability
+		false,   // durable
 		false,   // delete when unused
 		false,   // exclusive
 		false,   // no-wait
@@ -64,6 +63,7 @@ func (r *RabbitMQ) setupExchangesAndQueues() error {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	return nil
 }
 
@@ -71,7 +71,6 @@ func (r *RabbitMQ) Close() {
 	if r.conn != nil {
 		r.conn.Close()
 	}
-
 	if r.Channel != nil {
 		r.Channel.Close()
 	}

@@ -1,6 +1,5 @@
 import { Coordinate, Driver, Route, RouteFare, Trip } from "./types";
 
-
 // These are the endpoints the API Gateway must have for the frontend to work correctly
 export enum BackendEndpoints {
   PREVIEW_TRIP = "/trip/preview",

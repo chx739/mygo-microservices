@@ -36,7 +36,6 @@ export default function RiderMap({ onRouteSelected }: RiderMapProps) {
     const [destination, setDestination] = useState<[number, number] | null>(null)
     const mapRef = useRef<L.Map>(null)
     const userID = useMemo(() => crypto.randomUUID(), [])
-    const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
     const location = {
         latitude: 37.7749,
@@ -59,38 +58,27 @@ export default function RiderMap({ onRouteSelected }: RiderMapProps) {
             return
         }
 
-        if (debounceTimeoutRef.current) {
-            clearTimeout(debounceTimeoutRef.current);
-        }
+        setDestination([e.latlng.lat, e.latlng.lng])
 
-        debounceTimeoutRef.current = setTimeout(async () => {
-            setDestination([e.latlng.lat, e.latlng.lng])
+        const data = await requestRidePreview({
+            pickup: [location.latitude, location.longitude],
+            destination: [e.latlng.lat, e.latlng.lng],
+        })
+        console.log(data)
 
-            const data = await requestRidePreview({
-                pickup: [location.latitude, location.longitude],
-                destination: [e.latlng.lat, e.latlng.lng],
-            })
-            console.log(data)
+        const parsedRoute = data.route.geometry[0].coordinates
+            .map((coord) => [coord.longitude, coord.latitude] as [number, number])
 
-            if (!data?.route?.geometry?.[0]?.coordinates?.length) {
-                console.error("Invalid route payload", data)
-                return
-            }
+        setTrip({
+            tripID: "",
+            route: parsedRoute,
+            rideFares: data.rideFares,
+            distance: data.route.distance,
+            duration: data.route.duration,
+        })
 
-            const parsedRoute = data.route.geometry[0].coordinates
-                .map((coord) => [coord.latitude, coord.longitude] as [number, number])
-
-            setTrip({
-                tripID: "",
-                route: parsedRoute,
-                rideFares: data.rideFares,
-                distance: data.route.distance,
-                duration: data.route.duration,
-            })
-
-            // Call onRouteSelected with the route distance
-            onRouteSelected?.(data.route.distance)
-        }, 500);
+        // Call onRouteSelected with the route distance
+        onRouteSelected?.(data.route.distance)
     }
 
     const requestRidePreview = async (props: RequestRideProps): Promise<HTTPTripPreviewResponse> => {
@@ -169,39 +157,39 @@ export default function RiderMap({ onRouteSelected }: RiderMapProps) {
                     <Marker position={[location.latitude, location.longitude]} icon={userMarker} />
 
                     {/* Render geohash grid cells */}
-                    {drivers?.map((driver) => (
+                    {drivers.map((driver) => (
                         <Rectangle
-                            key={`grid-${driver?.geohash}`}
-                            bounds={getGeohashBounds(driver?.geohash) as L.LatLngBoundsExpression}
+                            key={`grid-${driver.geohash}`}
+                            bounds={getGeohashBounds(driver.geohash) as L.LatLngBoundsExpression}
                             pathOptions={{
                                 color: '#3388ff',
                                 weight: 1,
                                 fillOpacity: 0.1
                             }}
                         >
-                            <Popup>Geohash: {driver?.geohash}</Popup>
+                            <Popup>Geohash: {driver.geohash}</Popup>
                         </Rectangle>
                     ))}
 
                     {/* Render driver markers */}
-                    {drivers?.map((driver) => (
+                    {drivers.map((driver) => (
                         <Marker
-                            key={driver?.id}
+                            key={driver.id}
                             position={[driver?.location?.latitude, driver?.location?.longitude]}
                             icon={driverMarker}
                         >
                             <Popup>
-                                Driver ID: {driver?.id}
+                                Driver ID: {driver.id}
                                 <br />
-                                Geohash: {driver?.geohash}
+                                Geohash: {driver.geohash}
                                 <br />
-                                Name: {driver?.name}
+                                Name: {driver.name}
                                 <br />
-                                Car Plate: {driver?.carPlate}
+                                Car Plate: {driver.carPlate}
                                 <br />
                                 <Image
-                                    src={driver?.profilePicture}
-                                    alt={`${driver?.name}'s profile picture`}
+                                    src={driver.profilePicture}
+                                    alt={`${driver.name}'s profile picture`}
                                     width={100}
                                     height={100}
                                 />

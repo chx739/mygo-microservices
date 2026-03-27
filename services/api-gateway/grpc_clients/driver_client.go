@@ -25,6 +25,7 @@ func NewDriverServiceClient() (*driverServiceClient, error) {
 	}
 
 	client := pb.NewDriverServiceClient(conn)
+
 	return &driverServiceClient{
 		Client: client,
 		conn:   conn,
@@ -32,7 +33,7 @@ func NewDriverServiceClient() (*driverServiceClient, error) {
 }
 
 func (c *driverServiceClient) Close() {
-	if c.conn == nil {
+	if c.conn != nil {
 		if err := c.conn.Close(); err != nil {
 			return
 		}

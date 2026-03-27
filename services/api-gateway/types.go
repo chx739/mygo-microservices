@@ -11,12 +11,7 @@ type previewTripRequest struct {
 	Destination types.Coordinate `json:"destination"`
 }
 
-type previewTripResponse struct {
-	Route     *pb.Route      `json:"route"`
-	RideFares []*pb.RideFare `json:"rideFares"`
-}
-
-func (p *previewTripRequest) ToProto() *pb.PreviewTripRequest {
+func (p *previewTripRequest) toProto() *pb.PreviewTripRequest {
 	return &pb.PreviewTripRequest{
 		UserID: p.UserID,
 		StartLocation: &pb.Coordinate{
@@ -30,13 +25,12 @@ func (p *previewTripRequest) ToProto() *pb.PreviewTripRequest {
 	}
 }
 
-// Part of the exercise starter code
 type startTripRequest struct {
 	RideFareID string `json:"rideFareID"`
 	UserID     string `json:"userID"`
 }
 
-func (c *startTripRequest) ToProto() *pb.CreateTripRequest {
+func (c *startTripRequest) toProto() *pb.CreateTripRequest {
 	return &pb.CreateTripRequest{
 		RideFareID: c.RideFareID,
 		UserID:     c.UserID,

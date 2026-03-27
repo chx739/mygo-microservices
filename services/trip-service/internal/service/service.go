@@ -37,14 +37,44 @@ func (s *service) CreateTrip(ctx context.Context, fare *domain.RideFareModel) (*
 	return s.repo.CreateTrip(ctx, t)
 }
 
-func (s *service) GetRoute(ctx context.Context, pickup, destination *types.Coordinate) (*tripTypes.OsrmApiResponse, error) {
+func (s *service) GetRoute(ctx context.Context, pickup, destination *types.Coordinate, useOSRMApi bool) (*tripTypes.OsrmApiResponse, error) {
+	if !useOSRMApi {
+		// Return a simple mock response in case we don't want to rely on an external API
+		return &tripTypes.OsrmApiResponse{
+			Routes: []struct {
+				Distance float64 `json:"distance"`
+				Duration float64 `json:"duration"`
+				Geometry struct {
+					Coordinates [][]float64 `json:"coordinates"`
+				} `json:"geometry"`
+			}{
+				{
+					Distance: 5.0, // 5km
+					Duration: 600, // 10 minutes
+					Geometry: struct {
+						Coordinates [][]float64 `json:"coordinates"`
+					}{
+						Coordinates: [][]float64{
+							{pickup.Latitude, pickup.Longitude},
+							{destination.Latitude, destination.Longitude},
+						},
+					},
+				},
+			},
+		}, nil
+	}
+
+	// or use our self hosted API (check the course lesson: "Preparing for External API Failures")
+	baseURL := "http://router.project-osrm.org"
+
 	url := fmt.Sprintf(
-		"http://router.project-osrm.org/route/v1/driving/%f,%f;%f,%f?overview=full&geometries=geojson",
+		"%s/route/v1/driving/%f,%f;%f,%f?overview=full&geometries=geojson",
+		baseURL,
 		pickup.Longitude, pickup.Latitude,
 		destination.Longitude, destination.Latitude,
 	)
 
-	log.Printf("Fetching from OSRM API: URL: %s", url)
+	log.Printf("Started Fetching from OSRM API: URL: %s", url)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -57,19 +87,11 @@ func (s *service) GetRoute(ctx context.Context, pickup, destination *types.Coord
 		return nil, fmt.Errorf("failed to read the response: %v", err)
 	}
 
-	log.Printf("GOT RESPONSE FROM API %s", string(body))
+	log.Printf("Got response from OSRM API %s", string(body))
 
 	var routeResp tripTypes.OsrmApiResponse
 	if err := json.Unmarshal(body, &routeResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %v", err)
-	}
-
-	if len(routeResp.Routes) == 0 {
-		return nil, fmt.Errorf("osrm response has no routes")
-	}
-
-	if len(routeResp.Routes[0].Geometry.Coordinates) == 0 {
-		return nil, fmt.Errorf("osrm response route has empty geometry")
 	}
 
 	return &routeResp, nil

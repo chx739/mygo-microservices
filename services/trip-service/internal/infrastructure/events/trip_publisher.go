@@ -9,9 +9,9 @@ type TripEventPublisher struct {
 	rabbitmq *messaging.RabbitMQ
 }
 
-func NewTripPublisher(rabbitMQ *messaging.RabbitMQ) *TripEventPublisher {
+func NewTripEventPublisher(rabbitmq *messaging.RabbitMQ) *TripEventPublisher {
 	return &TripEventPublisher{
-		rabbitmq: rabbitMQ,
+		rabbitmq: rabbitmq,
 	}
 }
 

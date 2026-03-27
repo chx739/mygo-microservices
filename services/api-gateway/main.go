@@ -32,6 +32,7 @@ func main() {
 	}
 
 	serverErrors := make(chan error, 1)
+
 	go func() {
 		log.Printf("Server listening on %s", httpAddr)
 		serverErrors <- server.ListenAndServe()
@@ -39,6 +40,7 @@ func main() {
 
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
+
 	select {
 	case err := <-serverErrors:
 		log.Printf("Error starting the server: %v", err)
