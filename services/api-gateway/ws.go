@@ -36,6 +36,7 @@ func handleRidersWebSocket(w http.ResponseWriter, r *http.Request, rb *messaging
 	// Initialize queue consumers
 	queues := []string{
 		messaging.NotifyDriverNoDriversFoundQueue,
+		messaging.NotifyDriverAssignQueue,
 	}
 
 	for _, q := range queues {
@@ -146,7 +147,7 @@ func handleDriversWebSocket(w http.ResponseWriter, r *http.Request, rb *messagin
 
 		var driverMsg driverMessage
 		if err := json.Unmarshal(message, &driverMsg); err != nil {
-			log.Printf("Error unmarshalling  driver message: %v", err)
+			log.Printf("Error unmarshaling driver message: %v", err)
 			continue
 		}
 
@@ -155,7 +156,6 @@ func handleDriversWebSocket(w http.ResponseWriter, r *http.Request, rb *messagin
 		case contracts.DriverCmdLocation:
 			// Handle driver location update in the future
 			continue
-
 		case contracts.DriverCmdTripAccept, contracts.DriverCmdTripDecline:
 			// Forward the message to RabbitMQ
 			if err := rb.PublishMessage(ctx, driverMsg.Type, contracts.AmqpMessage{
@@ -163,7 +163,6 @@ func handleDriversWebSocket(w http.ResponseWriter, r *http.Request, rb *messagin
 				Data:    driverMsg.Data,
 			}); err != nil {
 				log.Printf("Error publishing message to RabbitMQ: %v", err)
-				continue
 			}
 		default:
 			log.Printf("Unknown message type: %s", driverMsg.Type)

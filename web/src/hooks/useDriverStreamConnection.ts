@@ -13,6 +13,29 @@ interface useDriverConnectionProps {
   packageSlug: CarPackageSlug;
 }
 
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const hasTripShape = (value: unknown): value is Trip =>
+  isObject(value) &&
+  typeof value.id === 'string' &&
+  typeof value.userID === 'string';
+
+const hasDriverID = (value: unknown): value is Driver =>
+  isObject(value) && typeof value.id === 'string' && value.id.length > 0;
+
+const normalizeTripPayload = (data: unknown): Trip | null => {
+  if (hasTripShape(data)) {
+    return data;
+  }
+
+  if (isObject(data) && hasTripShape(data.trip)) {
+    return data.trip;
+  }
+
+  return null;
+};
+
 export const useDriverStreamConnection = ({
   location,
   geohash,
@@ -53,11 +76,27 @@ export const useDriverStreamConnection = ({
       }
 
       switch (message.type) {
-        case TripEvents.DriverTripRequest:
-          setRequestedTrip(message.data);
+        case TripEvents.DriverTripRequest: {
+          const normalizedTrip = normalizeTripPayload(message.data);
+
+          if (!normalizedTrip) {
+            setError('Invalid trip request payload');
+            return;
+          }
+
+          setRequestedTrip(normalizedTrip);
+
+          // Some backend paths include driver inside the trip payload.
+          if (hasDriverID(normalizedTrip.driver)) {
+            setDriver(normalizedTrip.driver);
+          }
+
           break;
+        }
         case TripEvents.DriverRegister:
-          setDriver(message.data);
+          if (hasDriverID(message.data)) {
+            setDriver(message.data);
+          }
           break;
       }
 

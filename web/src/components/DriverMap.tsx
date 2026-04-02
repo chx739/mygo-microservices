@@ -68,7 +68,9 @@ export const DriverMap = ({ packageSlug }: { packageSlug: CarPackageSlug }) => {
   }
 
   const handleAcceptTrip = () => {
-    if (!requestedTrip || !requestedTrip.id || !driver) {
+    const selectedDriver = driver ?? requestedTrip?.driver
+
+    if (!requestedTrip || !requestedTrip.id || !selectedDriver || !selectedDriver.id) {
       alert("No trip ID found or driver is not set")
       return
     }
@@ -78,7 +80,7 @@ export const DriverMap = ({ packageSlug }: { packageSlug: CarPackageSlug }) => {
       data: {
         tripID: requestedTrip.id,
         riderID: requestedTrip.userID,
-        driver: driver,
+        driver: selectedDriver,
       }
     })
 
@@ -87,7 +89,9 @@ export const DriverMap = ({ packageSlug }: { packageSlug: CarPackageSlug }) => {
   }
 
   const handleDeclineTrip = () => {
-    if (!requestedTrip || !requestedTrip.id || !driver) {
+    const selectedDriver = driver ?? requestedTrip?.driver
+
+    if (!requestedTrip || !requestedTrip.id || !selectedDriver || !selectedDriver.id) {
       alert("No trip ID found or driver is not set")
       return
     }
@@ -97,7 +101,7 @@ export const DriverMap = ({ packageSlug }: { packageSlug: CarPackageSlug }) => {
       data: {
         tripID: requestedTrip.id,
         riderID: requestedTrip.userID,
-        driver: driver,
+        driver: selectedDriver,
       }
     })
 
@@ -172,7 +176,7 @@ export const DriverMap = ({ packageSlug }: { packageSlug: CarPackageSlug }) => {
 
       <div className="flex flex-col md:w-[400px] bg-white border-t md:border-t-0 md:border-l">
         <div className="p-4 border-b">
-          <DriverCard driver={driver} packageSlug={packageSlug} />
+          <DriverCard driver={driver ?? requestedTrip?.driver ?? null} packageSlug={packageSlug} />
         </div>
         <div className="flex-1 overflow-y-auto">
           <DriverTripOverview
