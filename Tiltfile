@@ -41,7 +41,7 @@ docker_build_with_restart(
 
 k8s_yaml('./infra/development/k8s/api-gateway-deployment.yaml')
 k8s_resource('api-gateway', port_forwards=8081,
-             resource_deps=['api-gateway-compile','rabbitmq'], labels="services")
+             resource_deps=['api-gateway-compile', 'rabbitmq'], labels="services")
 ### End of API Gateway ###
 ### Trip Service ###
 
@@ -70,7 +70,7 @@ docker_build_with_restart(
 )
 
 k8s_yaml('./infra/development/k8s/trip-service-deployment.yaml')
-k8s_resource('trip-service', resource_deps=['trip-service-compile'], labels="services")
+k8s_resource('trip-service', resource_deps=['trip-service-compile', 'rabbitmq'], labels="services")
 
 ### End of Trip Service ###
 ### Driver Service ###
@@ -100,7 +100,7 @@ docker_build_with_restart(
 )
 
 k8s_yaml('./infra/development/k8s/driver-service-deployment.yaml')
-k8s_resource('driver-service', resource_deps=['driver-service-compile'], labels="services")
+k8s_resource('driver-service', resource_deps=['driver-service-compile', 'rabbitmq'], labels="services")
 
 ### End of Driver Service ###
 ### Web Frontend ###
@@ -115,3 +115,40 @@ k8s_yaml('./infra/development/k8s/web-deployment.yaml')
 k8s_resource('web', port_forwards=3000, labels="frontend")
 
 ### End of Web Frontend ###
+
+
+### Payment Service ###
+
+payment_compile_cmd = 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/payment-service ./services/payment-service/cmd/main.go'
+if os.name == 'nt':
+  payment_compile_cmd = './infra/development/docker/payment-build.bat'
+
+local_resource(
+  'payment-service-compile',
+  payment_compile_cmd,
+  deps=['./services/payment-service', './shared'], labels="compiles")
+
+docker_build_with_restart(
+  'ride-sharing/payment-service',
+  '.',
+  entrypoint=['/app/build/payment-service'],
+  dockerfile='./infra/development/docker/payment-service.Dockerfile',
+  only=[
+    './build/payment-service',
+    './shared',
+  ],
+  live_update=[
+    sync('./build', '/app/build'),
+    sync('./shared', '/app/shared'),
+  ],
+)
+
+k8s_yaml('./infra/development/k8s/payment-service-deployment.yaml')
+k8s_resource('payment-service', resource_deps=['payment-service-compile', 'rabbitmq'], labels="services")
+
+### End of Payment Service ###
+
+### Jaeger ###
+k8s_yaml('./infra/development/k8s/jaeger.yaml')
+k8s_resource('jaeger', port_forwards=['16686:16686', '14268:14268'], labels="tooling")
+### End of Jaeger ###
