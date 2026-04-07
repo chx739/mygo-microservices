@@ -67,7 +67,7 @@ func (s *service) GetRoute(ctx context.Context, pickup, destination *types.Coord
 	}
 
 	// or use our self hosted API (check the course lesson: "Preparing for External API Failures")
-	baseURL := env.GetString("OSRM_API", "http://router.project-osrm.org")
+	baseURL := env.GetString("OSRM_API", "https://osrm.selfmadeengineer.com")
 
 	url := fmt.Sprintf(
 		"%s/route/v1/driving/%f,%f;%f,%f?overview=full&geometries=geojson",
