@@ -55,6 +55,11 @@ spec:
                 secretKeyRef:
                   name: rabbitmq-credentials
                   key: uri
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  key: REDIS_ADDR
+                  name: app-config
 ---
 apiVersion: v1
 kind: Service

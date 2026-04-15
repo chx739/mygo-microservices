@@ -2,6 +2,7 @@ tmp
 .env
 .envrc
 bin/
+.claude
 
 # Logs
 logs

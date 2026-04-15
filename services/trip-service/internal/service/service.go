@@ -9,21 +9,36 @@ import (
 	"net/http"
 	"ride-sharing/services/trip-service/internal/domain"
 	tripTypes "ride-sharing/services/trip-service/pkg/types"
+	"ride-sharing/shared/cache"
 	"ride-sharing/shared/env"
 	pbd "ride-sharing/shared/proto/driver"
 	"ride-sharing/shared/proto/trip"
 	"ride-sharing/shared/types"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+const (
+	// tripCacheTTL 定义行程缓存的过期时间。
+	// 行程状态在短时间内读取频繁、写入较少，10 分钟是一个兼顾命中率与一致性的默认值。
+	tripCacheTTL = 10 * time.Minute
+
+	// tripBloomFilterKey 是 Trip ID 布隆过滤器的 Redis key。
+	// 用于快速判断“请求的 tripID 是否可能存在”，减少无效请求穿透到 MongoDB。
+	tripBloomFilterKey = "bloom:trips"
 )
 
 type service struct {
 	repo domain.TripRepository
+	rdb  redis.UniversalClient
 }
 
-func NewService(repo domain.TripRepository) *service {
+func NewService(repo domain.TripRepository, redisClient redis.UniversalClient) *service {
 	return &service{
 		repo: repo,
+		rdb:  redisClient,
 	}
 }
 
@@ -36,7 +51,21 @@ func (s *service) CreateTrip(ctx context.Context, fare *domain.RideFareModel) (*
 		Driver:   &trip.TripDriver{},
 	}
 
-	return s.repo.CreateTrip(ctx, t)
+	createdTrip, err := s.repo.CreateTrip(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trip 创建成功后把 tripID 写入布隆过滤器。
+	// 这是防穿透链路的“正样本来源”：后续查询时能快速判断“可能存在”。
+	// 注意：布隆写入失败不阻断主流程，避免 Redis 短暂抖动影响核心下单成功率。
+	if s.rdb != nil {
+		if bloomErr := cache.BloomAdd(ctx, s.rdb, tripBloomFilterKey, createdTrip.ID.Hex()); bloomErr != nil {
+			log.Printf("trip bloom add failed for %s: %v", createdTrip.ID.Hex(), bloomErr)
+		}
+	}
+
+	return createdTrip, nil
 }
 
 func (s *service) GetRoute(ctx context.Context, pickup, destination *types.Coordinate, useOSRMApi bool) (*tripTypes.OsrmApiResponse, error) {
@@ -191,9 +220,89 @@ func getBaseFares() []*domain.RideFareModel {
 }
 
 func (s *service) GetTripByID(ctx context.Context, id string) (*domain.TripModel, error) {
-	return s.repo.GetTripByID(ctx, id)
+	// 缓存是可选能力：当 Redis 未注入时，保持原行为（直接回源仓储）。
+	if s.rdb == nil {
+		return s.repo.GetTripByID(ctx, id)
+	}
+
+	// 先做一次 ObjectID 格式校验。
+	// 非法 ID 可以直接判定“不存在”，避免无意义访问 Redis/Mongo。
+	if _, objectIDErr := primitive.ObjectIDFromHex(id); objectIDErr != nil {
+		return nil, fmt.Errorf("trip not found: %s", id)
+	}
+
+	// 第 0 步：布隆过滤器预检。
+	// - miss（false）: 一定不存在，可直接拦截，防止穿透到 DB。
+	// - hit（true）: 可能存在，继续走缓存/数据库查询。
+	bloomHit, bloomErr := cache.BloomExists(ctx, s.rdb, tripBloomFilterKey, id)
+	if bloomErr != nil {
+		// 布隆检查失败时降级到原流程，保证业务可用性优先。
+		log.Printf("trip bloom exists check failed for %s: %v", id, bloomErr)
+	} else if !bloomHit {
+		return nil, fmt.Errorf("trip not found: %s", id)
+	}
+
+	cacheKey := tripCacheKey(id)
+
+	// 第 1 步：优先读缓存。
+	// 命中则直接返回，避免重复访问 MongoDB。
+	cached, err := s.rdb.Get(ctx, cacheKey).Bytes()
+	if err == nil {
+		var cachedTrip domain.TripModel
+		if unmarshalErr := json.Unmarshal(cached, &cachedTrip); unmarshalErr == nil {
+			return &cachedTrip, nil
+		}
+
+		// 缓存反序列化失败通常意味着历史脏数据或结构变更。
+		// 这里删除坏缓存，防止后续请求持续命中错误数据。
+		_ = s.rdb.Del(ctx, cacheKey).Err()
+	} else if err != redis.Nil {
+		// 非 nil/非 redis.Nil 的错误视为缓存层瞬时异常，降级回源而不阻断主流程。
+		log.Printf("trip cache get failed for %s: %v", id, err)
+	}
+
+	// 第 2 步：缓存未命中或缓存异常，回源数据库。
+	tripModel, repoErr := s.repo.GetTripByID(ctx, id)
+	if repoErr != nil || tripModel == nil {
+		return tripModel, repoErr
+	}
+
+	// 通过 DB 命中的真实数据反哺布隆过滤器，避免过滤器位图长期不完整。
+	if bloomAddErr := cache.BloomAdd(ctx, s.rdb, tripBloomFilterKey, id); bloomAddErr != nil {
+		log.Printf("trip bloom add-after-hit failed for %s: %v", id, bloomAddErr)
+	}
+
+	// 第 3 步：把回源结果写回缓存，提升后续请求命中率。
+	// 缓存写入失败不影响主流程，避免 Redis 问题放大成业务不可用。
+	marshalled, marshalErr := json.Marshal(tripModel)
+	if marshalErr != nil {
+		log.Printf("trip cache marshal failed for %s: %v", id, marshalErr)
+		return tripModel, nil
+	}
+
+	if setErr := s.rdb.Set(ctx, cacheKey, marshalled, tripCacheTTL).Err(); setErr != nil {
+		log.Printf("trip cache set failed for %s: %v", id, setErr)
+	}
+
+	return tripModel, nil
 }
 
 func (s *service) UpdateTrip(ctx context.Context, tripID string, status string, driver *pbd.Driver) error {
-	return s.repo.UpdateTrip(ctx, tripID, status, driver)
+	if err := s.repo.UpdateTrip(ctx, tripID, status, driver); err != nil {
+		return err
+	}
+
+	// Trip 状态更新后，立即删除缓存，避免读取到旧状态。
+	// 采用“删除缓存”而不是“直接覆盖”，可避免不同写路径造成的缓存值分歧。
+	if s.rdb != nil {
+		if err := s.rdb.Del(ctx, tripCacheKey(tripID)).Err(); err != nil {
+			log.Printf("trip cache delete failed for %s: %v", tripID, err)
+		}
+	}
+
+	return nil
+}
+
+func tripCacheKey(id string) string {
+	return "trip:" + id
 }

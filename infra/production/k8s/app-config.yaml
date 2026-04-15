@@ -5,3 +5,7 @@ metadata:
 data:
   ENVIRONMENT: "production"
   GATEWAY_HTTP_ADDR: ":8081"
+  REDIS_ADDR: "redis:6379"
+  REDIS_DB: "0"
+  REDIS_MASTER_NAME: "mymaster"
+  REDIS_SENTINEL_ADDRS: "redis-headless:26379,redis-headless:26380,redis-headless:26381"

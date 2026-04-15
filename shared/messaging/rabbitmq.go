@@ -9,6 +9,7 @@ import (
 	"ride-sharing/shared/retry"
 	"ride-sharing/shared/tracing"
 
+	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -128,13 +129,22 @@ func (r *RabbitMQ) PublishMessage(ctx context.Context, routingKey string, messag
 		return fmt.Errorf("failed to marshal message: %v", err)
 	}
 
-	msg := amqp.Publishing{
-		DeliveryMode: amqp.Persistent,
-		ContentType:  "application/json",
-		Body:         jsonMsg,
-	}
+	msg := newPersistentJSONMessage(jsonMsg)
 
 	return tracing.TracedPublisher(ctx, TripExchange, routingKey, msg, r.publish)
+}
+
+// newPersistentJSONMessage 统一构造带 MessageId 的持久化消息。
+// MessageId 是后续消费者幂等去重的关键字段：
+// - 同一条消息被重复投递时，消费者可基于 MessageId 做 SetNX 去重。
+// - 使用 UUID 可保证全局唯一，避免不同消息的 key 冲突。
+func newPersistentJSONMessage(body []byte) amqp.Publishing {
+	return amqp.Publishing{
+		MessageId:    uuid.NewString(),
+		DeliveryMode: amqp.Persistent,
+		ContentType:  "application/json",
+		Body:         body,
+	}
 }
 
 func (r *RabbitMQ) publish(ctx context.Context, exchange, routingKey string, msg amqp.Publishing) error {

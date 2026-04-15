@@ -49,8 +49,17 @@ func main() {
 
 	log.Println("Starting RabbitMQ connection")
 
+	// 初始化 Redis（用于 Stripe webhook 事件幂等去重）。
+	redisClient, err := NewRedisClient(ctx)
+	if err != nil {
+		log.Fatalf("Failed to initialize Redis, err: %v", err)
+	}
+	defer redisClient.Close()
+
 	mux.HandleFunc("POST /trip/preview", enableCORS(handleTripPreview))
-	mux.HandleFunc("POST /trip/start", enableCORS(handleTripStart))
+	mux.HandleFunc("POST /trip/start", enableCORS(func(w http.ResponseWriter, r *http.Request) {
+		handleTripStart(w, r, redisClient)
+	}))
 	mux.HandleFunc("/ws/drivers", func(w http.ResponseWriter, r *http.Request) {
 		handleDriversWebSocket(w, r, rabbitmq)
 	})
@@ -58,7 +67,7 @@ func main() {
 		handleRidersWebSocket(w, r, rabbitmq)
 	})
 	mux.HandleFunc("/webhook/stripe", func(w http.ResponseWriter, r *http.Request) {
-		handleStripeWebhook(w, r, rabbitmq)
+		handleStripeWebhook(w, r, rabbitmq, redisClient)
 	})
 
 	server := &http.Server{

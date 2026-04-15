@@ -40,6 +40,11 @@ spec:
                 configMapKeyRef:
                   key: JAEGER_ENDPOINT
                   name: app-config
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  key: REDIS_ADDR
+                  name: app-config
 ---
 apiVersion: v1
 kind: Service

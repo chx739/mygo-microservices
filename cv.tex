@@ -1,0 +1,117 @@
+%%
+%% 简历重构版本 - 极简结构模板
+%%
+
+\documentclass[zh]{resume}
+
+\usepackage{geometry}            % 页面边距
+\geometry{left=0.5cm,right=0.5cm,top=1cm,bottom=0cm}
+
+% 引入插入图片和绝对定位的宏包
+\usepackage{graphicx}
+\usepackage{tikz}
+
+% 保持版面极简，移除所有花里胡哨的图标大小设置，采用默认规范
+\iconsize{\large}
+
+\name{瀚翔}{陈}
+\keywords{技能关键词1, 技能关键词2, 技能关键词3, 技能关键词4}
+
+\profile{
+  \textbf{求职意向}：后端开发工程师 \qquad
+  \email{1377954361@qq.com}
+  \phone{13456397284} 
+}
+
+\begin{document}
+\makeheader
+
+\begin{tikzpicture}[remember picture, overlay]
+  \node [anchor=north east, xshift=-1.5cm, yshift=-0cm] at (current page.north east) 
+        {\includegraphics[width=2.5cm]{pic.jpg}};
+\end{tikzpicture}
+
+%======================================================================
+\sectionTitle{教育背景}{\faGraduationCap}
+%======================================================================
+\begin{itemize}
+  \item 中山大学 \textbullet 计算机科学与技术 \textbullet 本科 \hfill \textbf{2020.09 -- 2024.07 } 
+        
+  % \vspace{0.1em} 
+  \item 中山大学 \textbullet 计算机技术 \textbullet 硕士 \hfill \textbf{2024.09 -- 2027.07} 
+         %\textbullet GPA: X.X/X.X (排名或比例)
+\end{itemize}
+
+%======================================================================
+\sectionTitle{专业技能}{\faCogs}
+%======================================================================
+\begin{itemize}
+  \item 熟练掌握 Golang 语言，理解 goroutine、channel 等并发编程模型与 GMP 调度机制。
+  \item 熟悉 Gin 等 Web 框架，gRPC、Protocol Buffers 与微服务通信机制，熟悉 Docker 容器化与 Kubernetes 部署，。
+  \item 熟悉 MySQL 数据库，Redis、MongoDB 等 NoSQL 与缓存策略。
+  \item 熟悉 RabbitMQ 等消息队列，理解其在系统解耦、通信、治理中的作用。
+  \item 熟悉 Eino 等 Agent 开发框架，熟悉RAG架构，熟悉LLM应用工程化。
+  \item 熟悉网络协议与编程：熟悉应用层HTTP/HTTPS等协议，熟悉网络编程及 Linux 环境开发。
+  \item 熟悉 Git 版本管理与团队协作流程，具备良好的系统设计、问题分析与团队沟通能力。
+\end{itemize}
+
+%======================================================================
+\sectionTitle{项目经历}{\faCode}
+%======================================================================
+\begin{itemize}
+  \item \textbf{分布式共享出行微服务后端系统} %\hfill \textbf{YYYY.MM -- 至今}
+    \\ \textbf{技术架构}：Go、gRPC、Protobuf、RabbitMQ、MongoDB、Docker、Kubernetes、OpenTelemetry、Jaeger
+    \\ \textbf{项目简介}：基于分布式微服务架构的共享出行调度平台，实现了行程预览、实时订单、司机调度与支付链路全流程
+    \begin{itemize}
+      \item \textbf{微服务与gRPC 通信}：基于 gRPC + Protobuf 实现网关、行程、司机调度、支付等服务的接口设计与高效通信。
+      \item  \textbf{设计事件驱动和消息可靠性}：使用\textbf{RabbitMQ}设计并实现订单、司机调度、支付等异步事件处理流程，增加分级重试与\textbf{死信队列（DLQ）}隔离策略，提升系统吞吐与稳定性。实现消息\textbf{幂等去重}（MessageId + Redis processing/done 状态机）与 Stripe Webhook 幂等去重（eventID），\textbf{基准实测}单实例完整流程 \textbf{P99 $\approx$ 0.81 ms}、吞吐 \textbf{$\sim$2.5k QPS}，\textbf{100 个 goroutine 抢同一 MessageId 100\% 收敛到 1 次业务执行}，彻底消除重复支付状态推进风险。
+      \item  \textbf{并发接单防护}：对多司机同时接受同一行程导致的双写/重复支付问题，落地\textbf{Redis 分布式锁} + MongoDB 条件更新双保险，入口用 \textbf{SET NX EX} 抢锁做前置限流，Lua 脚本原子校验 owner 释放，持久层用状态更新作为最终一致性闸门。\textbf{基准实测}加锁+释放 \textbf{P99 $\approx$ 0.80 ms}、单实例 \textbf{$\sim$2.4k QPS}，\textbf{100 司机抢同一 tripID 100\% 互斥正确}（\texttt{go test -race} 通过）。
+      \item \textbf{接口防护}:在网关接口实现三层防护 ——（1）基于\textbf{Redis ZSET + Lua 脚本}的滑动窗口限流，原子执行"删过期 → 计数 →写入"，\textbf{P99 $\approx$ 0.90 ms}、单实例 \textbf{$\sim$4.5k QPS}，200 并发 limit=10 精确放行 10 个；（2）SET NX EX 幂等锁拦截网络抖动引发的毫秒级重复请求，与限流覆盖不同时间粒度；（3）引入 Redis Bitmap 自实现\textbf{布隆过滤器}（1.25 MB 位图 + 双 FNV Hash + Pipeline 原子写），\textbf{20w ObjectID 实测误判率 0.118\%}、查询 \textbf{P99 $\approx$ 0.46 ms}，防止恶意枚举 ObjectID 的缓存穿透。
+      \item \textbf{可观测性与云原生工程化}：基于 OpenTelemetry + Jaeger 打通 HTTP/gRPC/RabbitMQ 跨服务链路追踪；编写多阶段 Dockerfile 与 Kubernetes 部署清单，支持本地开发与生产环境部署。
+    \end{itemize}
+
+  \item \textbf{智能OnCall Agent系统} %\hfill \textbf{YYYY.MM -- YYYY.MM}
+  \\ \textbf{技术架构}：Goframe、Eino、RAG、ReAct、Plan-Executor、Multi-Agent、MCP
+  \\ \textbf{项目简介}：智能OnCall系统通过AI Agent解决团队真实痛点，整合知识库、对话、运维三大核心能力，实现问题自动应答和故障智能排查的一体化服务。致力于降低团队OnCall的人力成本，提升团队效率。
+    \begin{itemize}
+      \item \textbf{AI Agent 架构设计}：基于 \textbf{Eino} 框架设计并实现了多个 AI Agent，包括 Knowledge Index Agent、Chat ReAct Agent 和 Plan-Execute-Replan Agent。通过图编排实现模块化的 Agent 工作流，设计并实现了多通用工具集，包括通过 MCP 协议集成日志查询工具、Prometheus 告警查询工具、MySQL 数据操作工具、联网查询等，使 AI Agent 能够灵活调用外部工具完成复杂任务。
+      \item \textbf{RAG 知识库系统设计}：设计了完整的文档向量化存储和检索方案，支持内部文档的智能检索增强生成。使 AI 能够基于内部知识库提供准确的业务咨询和技术支持。
+      \item \textbf{负责对话功能开发}：基于 \textbf{ReAct} 模式实现了对话 Agent。支持多轮对话上下文记忆，并通过容错处理优化体验。同时基于 \textbf{SSE} 技术实现 AI 对话流式输出，解决大模型响应延迟问题，前端呈现实时对话效果。
+      \item \textbf{负责 AIOps 功能开发}：基于 \textbf{Plan-Execute} 模式实现了智能运维 Agent。实现了根据告警信息 → 检索知识库 → 规划执行步骤 → 调用工具查询 → 分析结果 → 生成建议的完整业务流程。
+    \end{itemize}
+\end{itemize}
+
+% %======================================================================
+% \sectionTitle{实习与企业实践}{\faBriefcase}
+% %======================================================================
+% \begin{experiences}
+%   % 注意：如果编译后时间显示反了，请把这两个大括号里的时间互换位置
+%   \experience%
+%     [YYYY.MM]% 结束时间
+%     {YYYY.MM}% 开始时间
+%     {职位名称 @ 公司或机构名称}%
+%     [\begin{itemize}
+%       \item \textbf{工作重点一}：描述你在实习期间负责的主要业务模块和技术栈。
+%       \item \textbf{工作重点二}：描述你搭建的流水线、优化的流程或实现的数据处理任务。
+%       \item \textbf{工作重点三}：描述你引入的工程规范或对团队沟通效率的提升。
+%     \end{itemize}]
+
+%   \experience%
+%     [YYYY.MM]%
+%     {YYYY.MM}%
+%     {职位名称 @ 公司或机构名称}%
+%     [\begin{itemize}
+%       \item \textbf{工作重点一}：描述数据处理、自动化脚本或业务逻辑的实现。
+%       \item \textbf{工作重点二}：描述底层架构支撑、数据库设计或系统维护工作。
+%     \end{itemize}]
+% \end{experiences}
+
+%======================================================================
+\sectionTitle{荣誉与证书}{\faTrophy}
+%======================================================================
+\begin{itemize}
+  \item \textbf{奖学金类别}：教育部港澳台奖学金三等奖
+  \item \textbf{CET 4}：580 \textbf{CET 6}：560
+\end{itemize}
+
+\end{document}

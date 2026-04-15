@@ -19,7 +19,7 @@ var GrpcAddr = ":9092"
 func main() {
 	// Initialize Tracing
 	tracerCfg := tracing.Config{
-		ServiceName:    "api-gateway",
+		ServiceName:    "driver-service",
 		Environment:    env.GetString("ENVIRONMENT", "development"),
 		JaegerEndpoint: env.GetString("JAEGER_ENDPOINT", "http://jaeger:14268/api/traces"),
 	}
@@ -45,7 +45,15 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	svc := NewService()
+	// Driver Service 的状态存储已迁移到 Redis。
+	// 启动阶段主动建立连接并校验可用性，避免服务带病运行。
+	redisClient, err := NewRedisClient(ctx)
+	if err != nil {
+		log.Fatalf("failed to initialize redis client: %v", err)
+	}
+	defer redisClient.Close()
+
+	svc := NewService(redisClient)
 
 	// RabbitMQ connection
 	rabbitMqURI := env.GetString("RABBITMQ_URI", "amqp://guest:guest@rabbitmq:5672/")

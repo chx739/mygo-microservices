@@ -1,23 +1,45 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"ride-sharing/services/api-gateway/grpc_clients"
+	"ride-sharing/shared/cache"
 	"ride-sharing/shared/contracts"
 	"ride-sharing/shared/env"
 	"ride-sharing/shared/messaging"
 	"ride-sharing/shared/tracing"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stripe/stripe-go/v81"
 	"github.com/stripe/stripe-go/v81/webhook"
 )
 
 var tracer = tracing.GetTracer("api-gateway")
 
-func handleTripStart(w http.ResponseWriter, r *http.Request) {
+const (
+	// stripeWebhookIdempotencyTTL 控制 Stripe 事件去重窗口。
+	// Stripe 可能在较长时间内重试同一事件，24h 能覆盖大部分重试场景。
+	stripeWebhookIdempotencyTTL = 24 * time.Hour
+
+	// tripStartRateLimitWindow 定义下单滑动窗口时长。
+	// 这里采用 10 秒窗口，配合 tripStartRateLimitLimit=1，表示 10 秒内最多 1 次下单。
+	tripStartRateLimitWindow = 10 * time.Second
+
+	// tripStartRateLimitLimit 定义滑动窗口内的最大请求数。
+	tripStartRateLimitLimit = 1
+
+	// tripStartIdempotencyLockTTL 用于拦截毫秒级重复请求（网络抖动/前端连点）。
+	// 与滑动窗口互补：滑动窗口管“频率”，锁管“瞬时并发”。
+	tripStartIdempotencyLockTTL = 5 * time.Second
+)
+
+func handleTripStart(w http.ResponseWriter, r *http.Request, redisClient redis.UniversalClient) {
 	ctx, span := tracer.Start(r.Context(), "handleTripStart")
 	defer span.End()
 
@@ -28,6 +50,37 @@ func handleTripStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer r.Body.Close()
+
+	if reqBody.UserID == "" {
+		http.Error(w, "user ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// 第一道防线：滑动窗口限流。
+	// 目标：拦截“10 秒内多次点击下单”这类慢速重复请求。
+	allowed, err := allowTripStartByRateLimit(ctx, redisClient, reqBody.UserID)
+	if err != nil {
+		log.Printf("failed to apply trip start rate limit: %v", err)
+		http.Error(w, "failed to apply rate limit", http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+
+	// 第二道防线：幂等锁。
+	// 目标：拦截同一用户在极短时间内发出的并发重复请求。
+	locked, err := acquireTripStartCreateLock(ctx, redisClient, reqBody.UserID)
+	if err != nil {
+		log.Printf("failed to acquire trip start idempotency lock: %v", err)
+		http.Error(w, "failed to apply duplicate request protection", http.StatusInternalServerError)
+		return
+	}
+	if !locked {
+		http.Error(w, "duplicate request", http.StatusConflict)
+		return
+	}
 
 	// Why we need to create a new client for each connection:
 	// because if a service is down, we don't want to block the whole application
@@ -50,6 +103,34 @@ func handleTripStart(w http.ResponseWriter, r *http.Request) {
 	response := contracts.APIResponse{Data: trip}
 
 	writeJSON(w, http.StatusCreated, response)
+}
+
+// allowTripStartByRateLimit 使用 Redis Lua 滑动窗口判断本次下单是否允许。
+// 返回 false 不代表系统错误，而是命中限流阈值。
+func allowTripStartByRateLimit(ctx context.Context, redisClient redis.UniversalClient, userID string) (bool, error) {
+	if redisClient == nil {
+		return false, fmt.Errorf("redis client is required for trip start rate limit")
+	}
+
+	return cache.SlidingWindowAllow(ctx, redisClient, userID, tripStartRateLimitLimit, tripStartRateLimitWindow)
+}
+
+// acquireTripStartCreateLock 获取下单幂等锁。
+// 返回 false 表示已有同 userID 的下单请求正在窗口期内，不应继续创建订单。
+func acquireTripStartCreateLock(ctx context.Context, redisClient redis.UniversalClient, userID string) (bool, error) {
+	if redisClient == nil {
+		return false, fmt.Errorf("redis client is required for trip start lock")
+	}
+
+	if userID == "" {
+		return false, fmt.Errorf("userID is required for trip start lock")
+	}
+
+	return redisClient.SetNX(ctx, buildTripStartLockKey(userID), 1, tripStartIdempotencyLockTTL).Result()
+}
+
+func buildTripStartLockKey(userID string) string {
+	return "trip:create:lock:" + userID
 }
 
 func handleTripPreview(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +174,7 @@ func handleTripPreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, response)
 }
 
-func handleStripeWebhook(w http.ResponseWriter, r *http.Request, rb *messaging.RabbitMQ) {
+func handleStripeWebhook(w http.ResponseWriter, r *http.Request, rb *messaging.RabbitMQ, redisClient redis.UniversalClient) {
 	ctx, span := tracer.Start(r.Context(), "handleStripeWebhook")
 	defer span.End()
 
@@ -125,6 +206,19 @@ func handleStripeWebhook(w http.ResponseWriter, r *http.Request, rb *messaging.R
 	}
 
 	log.Printf("Received Stripe event: %v", event)
+
+	processed, err := markStripeWebhookEventProcessed(ctx, redisClient, event.ID)
+	if err != nil {
+		log.Printf("Error marking Stripe event as processed: %v", err)
+		http.Error(w, "Failed to process webhook idempotency", http.StatusInternalServerError)
+		return
+	}
+
+	if !processed {
+		// 幂等命中：该事件已经处理过，直接返回 200 阻止 Stripe 持续重试。
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	switch event.Type {
 	case "checkout.session.completed":
@@ -165,4 +259,26 @@ func handleStripeWebhook(w http.ResponseWriter, r *http.Request, rb *messaging.R
 			return
 		}
 	}
+}
+
+// markStripeWebhookEventProcessed 使用 Redis SetNX 标记 Stripe 事件幂等状态。
+// 返回值说明：
+// - true: 当前事件首次处理，可继续执行业务逻辑。
+// - false: 当前事件已处理过，应直接返回 200。
+func markStripeWebhookEventProcessed(ctx context.Context, redisClient redis.UniversalClient, eventID string) (bool, error) {
+	if redisClient == nil {
+		return false, fmt.Errorf("redis client is required for stripe webhook idempotency")
+	}
+
+	if eventID == "" {
+		return false, fmt.Errorf("stripe event id is required")
+	}
+
+	key := "stripe:event:" + eventID
+	ok, err := redisClient.SetNX(ctx, key, 1, stripeWebhookIdempotencyTTL).Result()
+	if err != nil {
+		return false, err
+	}
+
+	return ok, nil
 }

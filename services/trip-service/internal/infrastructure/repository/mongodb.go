@@ -58,22 +58,40 @@ func (r *mongoRepository) UpdateTrip(ctx context.Context, tripID string, status 
 		return err
 	}
 
+	// 关键兜底：当状态要更新为 accepted 时，只允许从 pending 迁移。
+	// 这样即使 Redis 锁在极端情况下失效，数据库仍能拒绝重复接单写入。
+	filter := buildTripUpdateFilter(_id, status)
+
 	update := bson.M{"$set": bson.M{"status": status}}
 
 	if driver != nil {
 		update["$set"].(bson.M)["driver"] = driver
 	}
 
-	result, err := r.db.Collection(db.TripsCollection).UpdateOne(ctx, bson.M{"_id": _id}, update)
+	result, err := r.db.Collection(db.TripsCollection).UpdateOne(ctx, filter, update)
 	if err != nil {
 		return err
 	}
 
-	if result.ModifiedCount == 0 {
+	if result.MatchedCount == 0 {
+		if status == "accepted" {
+			return fmt.Errorf("trip already accepted or not found: %s", tripID)
+		}
 		return fmt.Errorf("trip not found: %s", tripID)
 	}
 
 	return nil
+}
+
+// buildTripUpdateFilter 按目标状态构造 Mongo 更新条件。
+// 目前仅对 accepted 场景加“必须是 pending”的状态闸门。
+func buildTripUpdateFilter(id primitive.ObjectID, status string) bson.M {
+	filter := bson.M{"_id": id}
+	if status == "accepted" {
+		filter["status"] = "pending"
+	}
+
+	return filter
 }
 
 func (r *mongoRepository) SaveRideFare(ctx context.Context, fare *domain.RideFareModel) error {

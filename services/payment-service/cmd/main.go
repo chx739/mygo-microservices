@@ -63,6 +63,13 @@ func main() {
 	// Service
 	svc := service.NewPaymentService(paymentProcessor)
 
+	// 初始化 Redis（用于消息幂等去重）。
+	redisClient, err := NewRedisClient(ctx)
+	if err != nil {
+		log.Fatalf("Failed to initialize Redis, err: %v", err)
+	}
+	defer redisClient.Close()
+
 	// RabbitMQ connection
 	rabbitMqURI := env.GetString("RABBITMQ_URI", "amqp://guest:guest@rabbitmq:5672/")
 	rabbitmq, err := messaging.NewRabbitMQ(rabbitMqURI)
@@ -74,7 +81,7 @@ func main() {
 	log.Println("Starting RabbitMQ connection")
 
 	// Trip Consumer
-	tripConsumer := events.NewTripConsumer(rabbitmq, svc)
+	tripConsumer := events.NewTripConsumer(rabbitmq, svc, redisClient)
 	go tripConsumer.Listen()
 
 	// Wait for shutdown signal

@@ -17,6 +17,27 @@ spec:
           image: europe-west1-docker.pkg.dev/{{PROJECT_ID}}/ride-sharing/trip-service
           ports:
             - containerPort: 8083
+          env:
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  key: REDIS_ADDR
+                  name: app-config
+            - name: REDIS_DB
+              valueFrom:
+                configMapKeyRef:
+                  key: REDIS_DB
+                  name: app-config
+            - name: REDIS_MASTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  key: REDIS_MASTER_NAME
+                  name: app-config
+            - name: REDIS_SENTINEL_ADDRS
+              valueFrom:
+                configMapKeyRef:
+                  key: REDIS_SENTINEL_ADDRS
+                  name: app-config
           resources:
             requests:
               memory: "64Mi"

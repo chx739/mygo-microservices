@@ -50,10 +50,17 @@ func main() {
 	log.Printf(mongoDb.Name())
 
 	// inmemRepo := repository.NewInmemRepository()
-	// svc := service.NewService(inmemRepo)
+	// svc := service.NewService(inmemRepo, redisClient)
+
+	// 初始化 Redis（用于接单分布式锁 + Trip 读缓存）。
+	redisClient, err := NewRedisClient(ctx)
+	if err != nil {
+		log.Fatalf("Failed to initialize Redis, err: %v", err)
+	}
+	defer redisClient.Close()
 
 	mongoDBRepo := repository.NewMongoRepository(mongoDb)
-	svc := service.NewService(mongoDBRepo)
+	svc := service.NewService(mongoDBRepo, redisClient)
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)
@@ -80,11 +87,11 @@ func main() {
 	publisher := events.NewTripEventPublisher(rabbitmq)
 
 	// Start driver consumer
-	driverConsumer := events.NewDriverConsumer(rabbitmq, svc)
+	driverConsumer := events.NewDriverConsumer(rabbitmq, svc, redisClient)
 	go driverConsumer.Listen()
 
 	// Start payment consumer
-	paymentConsumer := events.NewPaymentConsumer(rabbitmq, svc)
+	paymentConsumer := events.NewPaymentConsumer(rabbitmq, svc, redisClient)
 	go paymentConsumer.Listen()
 
 	// Starting the gRPC server
