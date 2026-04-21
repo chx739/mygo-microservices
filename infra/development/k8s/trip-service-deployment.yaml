@@ -11,19 +11,28 @@ spec:
     metadata:
       labels:
         app: trip-service
+      annotations:
+        # Prometheus scrape 注解（方案 § 3.Step 2）。metrics 端口走独立 :9100，
+        # 与 gRPC :9093 隔离，参见方案 § 3.Step 1 决策 D3。
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
         - name: trip-service
           image: ride-sharing/trip-service
           ports:
             - containerPort: 9093
+              name: grpc
+            - containerPort: 9100
+              name: metrics
           resources:
             requests:
-              memory: "64Mi"
-              cpu: "100m"
-            limits:
-              memory: "128Mi"
+              memory: "256Mi"
               cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
           env:
             - name: MONGODB_URI
               valueFrom:
@@ -57,4 +66,8 @@ spec:
     - port: 9093
       name: grpc
       targetPort: 9093
+    # metrics 端口（方案 § 3.Step 2），Prometheus 通过 Service DNS 抓取 trip-service:9100。
+    - port: 9100
+      name: metrics
+      targetPort: 9100
   type: ClusterIP

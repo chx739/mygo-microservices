@@ -14,6 +14,7 @@ import (
 	pbd "ride-sharing/shared/proto/driver"
 	"ride-sharing/shared/proto/trip"
 	"ride-sharing/shared/types"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -140,33 +141,76 @@ func (s *service) EstimatePackagesPriceWithRoute(route *tripTypes.OsrmApiRespons
 }
 
 func (s *service) GenerateTripFares(ctx context.Context, rideFares []*domain.RideFareModel, userID string, route *tripTypes.OsrmApiResponse) ([]*domain.RideFareModel, error) {
+	// 压测专用（方案 § 5）：Mongo Atlas 远端 insert 单次 ~1s，把 preview 顶成外部延迟瓶颈。
+	// 改走 Redis（in-cluster ~1ms）存 fare，GetAndValidateFare 也先查 Redis。
+	// CreateTrip 内嵌 fare，不再依赖 Mongo rideFares 集合。loadtest 后 git restore。
 	fares := make([]*domain.RideFareModel, len(rideFares))
+	errs := make([]error, len(rideFares))
+	var wg sync.WaitGroup
 
 	for i, f := range rideFares {
-		id := primitive.NewObjectID()
-
-		fare := &domain.RideFareModel{
-			UserID:            userID,
-			ID:                id,
-			TotalPriceInCents: f.TotalPriceInCents,
-			PackageSlug:       f.PackageSlug,
-			Route:             route,
-		}
-
-		if err := s.repo.SaveRideFare(ctx, fare); err != nil {
-			return nil, fmt.Errorf("failed to save trip fare: %w", err)
-		}
-
-		fares[i] = fare
+		wg.Add(1)
+		go func(i int, f *domain.RideFareModel) {
+			defer wg.Done()
+			fare := &domain.RideFareModel{
+				UserID:            userID,
+				ID:                primitive.NewObjectID(),
+				TotalPriceInCents: f.TotalPriceInCents,
+				PackageSlug:       f.PackageSlug,
+				Route:             route,
+			}
+			if s.rdb != nil {
+				b, mErr := json.Marshal(fare)
+				if mErr != nil {
+					errs[i] = fmt.Errorf("marshal fare: %w", mErr)
+					return
+				}
+				if err := s.rdb.Set(ctx, fareCacheKey(fare.ID.Hex()), b, fareCacheTTL).Err(); err != nil {
+					errs[i] = fmt.Errorf("redis save fare: %w", err)
+					return
+				}
+				fares[i] = fare
+				return
+			}
+			if err := s.repo.SaveRideFare(ctx, fare); err != nil {
+				errs[i] = fmt.Errorf("failed to save trip fare: %w", err)
+				return
+			}
+			fares[i] = fare
+		}(i, f)
 	}
-
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
 	return fares, nil
 }
 
+func fareCacheKey(id string) string { return "fare:" + id }
+
+const fareCacheTTL = 10 * time.Minute
+
 func (s *service) GetAndValidateFare(ctx context.Context, fareID, userID string) (*domain.RideFareModel, error) {
-	fare, err := s.repo.GetRideFareByID(ctx, fareID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get trip fare: %w", err)
+	// 压测专用（方案 § 5）：先查 Redis，miss 再 fallback Mongo。
+	// GenerateTripFares 已改走 Redis，这里保持对称；loadtest 后 git restore。
+	var fare *domain.RideFareModel
+	if s.rdb != nil {
+		raw, rErr := s.rdb.Get(ctx, fareCacheKey(fareID)).Bytes()
+		if rErr == nil && len(raw) > 0 {
+			var cached domain.RideFareModel
+			if jErr := json.Unmarshal(raw, &cached); jErr == nil {
+				fare = &cached
+			}
+		}
+	}
+	if fare == nil {
+		f, err := s.repo.GetRideFareByID(ctx, fareID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get trip fare: %w", err)
+		}
+		fare = f
 	}
 
 	if fare == nil {

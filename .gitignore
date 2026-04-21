@@ -63,3 +63,6 @@ build/
 
 # Secrets
 secrets.yaml
+
+# Custom k6 binary (built by xk6 for loadtest, see 演唱会压测实现方案.md § 3.Step 0.5)
+/k6

@@ -1,0 +1,18 @@
+# 演唱会压测方案 § 3.Step 8：driver-service pod kill。
+# T+8min 注入，一次性 kill 1 个 driver-service pod。
+# 目标：观察 K8s 自愈（新 pod 起来）期间 trip 分配链路是否有可接受的降级，
+# 而不是雪崩到 rider 超时。
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: concert-pod-kill-driver
+  namespace: chaos-mesh
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: ["default"]
+    labelSelectors:
+      app: driver-service
+  # pod-kill 是一次性动作；60s 后结束实验 CR（不影响 pod 重启）。
+  duration: "60s"

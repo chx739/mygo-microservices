@@ -50,7 +50,7 @@ k8s_resource('api-gateway', port_forwards=8081,
 ### End of API Gateway ###
 ### Trip Service ###
 
-trip_compile_cmd = 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/trip-service ./services/trip-service/cmd/main.go'
+trip_compile_cmd = 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/trip-service ./services/trip-service/cmd'
 if os.name == 'nt':
  trip_compile_cmd = './infra/development/docker/trip-build.bat'
 
@@ -157,3 +157,16 @@ k8s_resource('payment-service', resource_deps=['payment-service-compile', 'rabbi
 k8s_yaml('./infra/development/k8s/jaeger.yaml')
 k8s_resource('jaeger', port_forwards=['16686:16686', '14268:14268'], labels="tooling")
 ### End of Jaeger ###
+
+### Prometheus（演唱会压测方案 § 3.Step 2）###
+# scrape 4 个服务 + 接收 k6 remote_write。面板通过 grafana 连本服务。
+k8s_yaml('./infra/development/k8s/prometheus.yaml')
+k8s_resource('prometheus', port_forwards=['9090:9090'], labels="observability")
+### End of Prometheus ###
+
+### Grafana（演唱会压测方案 § 3.Step 2）###
+# 宿主端口 3001（3000 被 web 占用）；匿名 Admin 方便团队演示，不做权限隔离。
+k8s_yaml('./infra/development/k8s/grafana.yaml')
+k8s_resource('grafana', port_forwards=['3001:3000'],
+             resource_deps=['prometheus'], labels="observability")
+### End of Grafana ###

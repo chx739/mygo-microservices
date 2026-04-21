@@ -1,0 +1,91 @@
+# Prometheus 部署清单（演唱会压测方案 § 3.Step 2）。
+# 职责：抓取 4 个 service 的 /metrics + 接收 k6 remote_write 推上来的压测指标。
+# 使用 static_configs 而非 kubernetes_sd_configs，避免给 Prometheus 配 RBAC。
+# retention 2h 就够一场压测（17min）+ 复盘窗口。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      # 4 个业务服务：api-gateway 的 /metrics 和主 HTTP 共端口 8081；
+      # 三个后端走独立 :9100（详见方案 § 3.Step 1 决策 D3）。
+      - job_name: 'api-gateway'
+        static_configs:
+          - targets: ['api-gateway:8081']
+      - job_name: 'trip-service'
+        static_configs:
+          - targets: ['trip-service:9100']
+      - job_name: 'driver-service'
+        static_configs:
+          - targets: ['driver-service:9100']
+      - job_name: 'payment-service'
+        static_configs:
+          - targets: ['payment-service:9100']
+
+      # Prometheus 自监控，面板 Row 4 的资源图会用到。
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=2h"
+            # 关键：启用 remote_write 接收器，k6 把指标推到这里（方案 § 3.Step 2 必选参数）。
+            - "--web.enable-remote-write-receiver"
+            - "--web.listen-address=:9090"
+          ports:
+            - containerPort: 9090
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: storage
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: 9090
+  selector:
+    app: prometheus

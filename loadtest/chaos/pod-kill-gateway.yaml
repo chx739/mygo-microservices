@@ -1,0 +1,18 @@
+# 演唱会压测方案 § 3.Step 8：api-gateway pod kill。
+# T+11min 注入，一次性 kill api-gateway（只起 1 副本，重启期间入口会断）。
+# 目标：观测入口恢复时间 + rider/driver 的 WebSocket 自动重连成功率。
+# 注意：本期 api-gateway replicas=1，kill 会导致短暂入口下线，
+# 面板上预期看到 QPS 掉到 0 再恢复，不是「服务只是变慢」。
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: concert-pod-kill-gateway
+  namespace: chaos-mesh
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: ["default"]
+    labelSelectors:
+      app: api-gateway
+  duration: "60s"

@@ -1,0 +1,21 @@
+# 演唱会压测方案 § 3.Step 8：Redis 网络延迟。
+# T+9min 注入，持续 1min，对 redis pod 的网络包加 50ms±10ms 抖动延迟。
+# 目标：验证限流/幂等/布隆/缓存等依赖 Redis 的路径在慢 Redis 下不会被
+# 无限阻塞（关键是 context 超时 + 回源降级），不是打挂系统。
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: concert-redis-delay
+  namespace: chaos-mesh
+spec:
+  action: delay
+  mode: one
+  selector:
+    namespaces: ["default"]
+    labelSelectors:
+      app: redis
+  delay:
+    latency: "50ms"
+    correlation: "25"
+    jitter: "10ms"
+  duration: "60s"

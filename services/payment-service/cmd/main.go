@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,12 +14,19 @@ import (
 	"ride-sharing/services/payment-service/pkg/types"
 	"ride-sharing/shared/env"
 	"ride-sharing/shared/messaging"
+	"ride-sharing/shared/metrics"
 	"ride-sharing/shared/tracing"
 )
 
 var GrpcAddr = env.GetString("GRPC_ADDR", ":9004")
 
+// metricsAddr 见方案 § 3.Step 1 决策 D3。
+var metricsAddr = env.GetString("METRICS_ADDR", ":9100")
+
 func main() {
+	metrics.Register("payment-service")
+	startMetricsServer()
+
 	// Initialize Tracing
 	tracerCfg := tracing.Config{
 		ServiceName:    "payment-service",
@@ -87,4 +95,15 @@ func main() {
 	// Wait for shutdown signal
 	<-ctx.Done()
 	log.Println("Shutting down payment service...")
+}
+
+func startMetricsServer() {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	go func() {
+		log.Printf("metrics server listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, mux); err != nil {
+			log.Printf("metrics server exited: %v", err)
+		}
+	}()
 }

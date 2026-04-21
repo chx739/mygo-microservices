@@ -1,0 +1,90 @@
+# 演唱会压测方案 § 3.Step 8：Chaos Workflow 统一编排。
+#
+# 时间线（相对 k6 启动时刻 T0）：
+#   T+8min : pod-kill driver-service      (60s)
+#   T+9min : NetworkChaos delay redis     (60s)
+#   T+10min: NetworkChaos loss mongodb    (60s)
+#   T+11min: pod-kill api-gateway         (60s)
+#   T+12min: 故障注入结束，观察 5min 恢复
+#
+# 工作流的启动时机由 loadtest/run.sh 控制：先 `k6 run` 起来，再 `kubectl apply`
+# 此文件，Workflow 里前置一个 8min 的 Suspend 来对齐「峰值期间才注故障」。
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Workflow
+metadata:
+  name: concert-chaos
+  namespace: chaos-mesh
+spec:
+  entry: concert-sequence
+  templates:
+    - name: concert-sequence
+      templateType: Serial
+      deadline: 20m
+      children:
+        - wait-until-peak
+        - kill-driver
+        - wait-1min
+        - redis-delay
+        - wait-1min
+        - mongo-loss
+        - wait-1min
+        - kill-gateway
+
+    # Suspend 占位：T0 ~ T+8min 峰值爬升期不注入故障。
+    - name: wait-until-peak
+      templateType: Suspend
+      deadline: 8m
+    - name: wait-1min
+      templateType: Suspend
+      deadline: 1m
+
+    - name: kill-driver
+      templateType: PodChaos
+      deadline: 60s
+      podChaos:
+        action: pod-kill
+        mode: one
+        selector:
+          namespaces: ["default"]
+          labelSelectors:
+            app: driver-service
+
+    - name: redis-delay
+      templateType: NetworkChaos
+      deadline: 60s
+      networkChaos:
+        action: delay
+        mode: one
+        selector:
+          namespaces: ["default"]
+          labelSelectors:
+            app: redis
+        delay:
+          latency: "50ms"
+          correlation: "25"
+          jitter: "10ms"
+
+    - name: mongo-loss
+      templateType: NetworkChaos
+      deadline: 60s
+      networkChaos:
+        action: loss
+        mode: one
+        selector:
+          namespaces: ["default"]
+          labelSelectors:
+            app: mongodb
+        loss:
+          loss: "10"
+          correlation: "25"
+
+    - name: kill-gateway
+      templateType: PodChaos
+      deadline: 60s
+      podChaos:
+        action: pod-kill
+        mode: one
+        selector:
+          namespaces: ["default"]
+          labelSelectors:
+            app: api-gateway

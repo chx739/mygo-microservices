@@ -7,6 +7,9 @@ option go_package = "shared/proto/trip;trip";
 service TripService {
   rpc PreviewTrip(PreviewTripRequest) returns (PreviewTripResponse);
   rpc CreateTrip(CreateTripRequest) returns (CreateTripResponse);
+  // GetTrip：按 tripID 取单条 Trip。演唱会压测方案 § 3.Step 4.3 新增。
+  // 实现复用现有 service.GetTripByID（含 Bloom 预检），api-gateway 通过 GET /trip/:id 透传。
+  rpc GetTrip(GetTripRequest) returns (GetTripResponse);
 }
 
 message PreviewTripRequest {
@@ -51,6 +54,17 @@ message CreateTripRequest {
 message CreateTripResponse {
   string tripID = 1;
   Trip trip = 2;
+}
+
+// GetTripRequest / GetTripResponse 配合 GetTrip rpc。
+// trip-service handler 遇到 Bloom miss 或 Mongo not found 返回 codes.NotFound；
+// api-gateway 透传时把 NotFound 映射回 HTTP 404。
+message GetTripRequest {
+  string tripID = 1;
+}
+
+message GetTripResponse {
+  Trip trip = 1;
 }
 
 message Trip {

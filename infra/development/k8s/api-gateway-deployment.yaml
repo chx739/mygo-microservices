@@ -11,6 +11,13 @@ spec:
     metadata:
       labels:
         app: api-gateway
+      annotations:
+        # Prometheus scrape 注解（方案 § 3.Step 2）。
+        # 当前 Prometheus 用 static_configs 抓取，注解仅作文档化声明；
+        # 若后续切 kubernetes_sd_configs 发现机制，这些注解会自动生效。
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
         - name: api-gateway
@@ -19,11 +26,11 @@ spec:
             - containerPort: 8081
           resources:
             requests:
-              memory: "128Mi"
-              cpu: "125m"
+              memory: "512Mi"
+              cpu: "250m"
             limits:
-              memory: "128Mi"
-              cpu: "125m"
+              memory: "1Gi"
+              cpu: "1000m"
           env:
             # Accessing an env variable from the app-config config map
             - name: GATEWAY_HTTP_ADDR
@@ -51,6 +58,31 @@ spec:
                 secretKeyRef:
                   name: stripe-secrets
                   key: stripe-webhook-key
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb
+                  key: uri
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secrets
+                  key: secret
+            - name: JWT_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: JWT_ISSUER
+            - name: JWT_ACCESS_TTL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: JWT_ACCESS_TTL_SECONDS
+            - name: JWT_REFRESH_TTL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: JWT_REFRESH_TTL_SECONDS
 ---
 apiVersion: v1
 kind: Service

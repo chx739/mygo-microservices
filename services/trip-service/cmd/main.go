@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"ride-sharing/services/trip-service/internal/infrastructure/events"
@@ -13,6 +14,7 @@ import (
 	"ride-sharing/shared/db"
 	"ride-sharing/shared/env"
 	"ride-sharing/shared/messaging"
+	"ride-sharing/shared/metrics"
 	"ride-sharing/shared/tracing"
 	"syscall"
 
@@ -21,7 +23,15 @@ import (
 
 var GrpcAddr = ":9093"
 
+// metricsAddr 是暴露 /metrics 的独立 HTTP 端口（方案 § 3.Step 1 决策 D3）。
+// 三个后端 gRPC 服务统一用 :9100，避免和各自 gRPC 主端口冲突。
+var metricsAddr = env.GetString("METRICS_ADDR", ":9100")
+
 func main() {
+	// 注册 Prometheus 指标（方案 § 3.Step 1）。
+	metrics.Register("trip-service")
+	startMetricsServer()
+
 	// Initialize Tracing
 	tracerCfg := tracing.Config{
 		ServiceName:    "trip-service",
@@ -111,4 +121,19 @@ func main() {
 	<-ctx.Done()
 	log.Println("Shutting down the server...")
 	grpcServer.GracefulStop()
+}
+
+// startMetricsServer 起一个独立的 HTTP server，暴露 /metrics 供 Prometheus 抓取。
+// 为什么独立 server：trip-service 主服务是 gRPC（:9093），原本无 HTTP；新开 :9100
+// 专用于 metrics，不与 gRPC 共端口，也不影响主流程启动路径。
+// 失败仅记日志不退出：监控面板丢失不应拖垮业务。
+func startMetricsServer() {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	go func() {
+		log.Printf("metrics server listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, mux); err != nil {
+			log.Printf("metrics server exited: %v", err)
+		}
+	}()
 }

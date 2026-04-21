@@ -1,0 +1,20 @@
+# 演唱会压测方案 § 3.Step 8：Mongo 网络丢包。
+# T+10min 注入，持续 1min，对 mongodb pod 流量 10% 丢包。
+# 目标：让 trip-service 的 Mongo 读写路径真实触发重试 / 超时，
+# 验证 Mongo 驱动的 serverSelectionTimeoutMS 和应用层 context timeout 配合是否合理。
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: concert-mongo-loss
+  namespace: chaos-mesh
+spec:
+  action: loss
+  mode: one
+  selector:
+    namespaces: ["default"]
+    labelSelectors:
+      app: mongodb
+  loss:
+    loss: "10"
+    correlation: "25"
+  duration: "60s"

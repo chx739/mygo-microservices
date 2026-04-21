@@ -4,10 +4,12 @@ import (
 	"context"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"ride-sharing/shared/env"
 	"ride-sharing/shared/messaging"
+	"ride-sharing/shared/metrics"
 	"ride-sharing/shared/tracing"
 	"syscall"
 
@@ -16,7 +18,13 @@ import (
 
 var GrpcAddr = ":9092"
 
+// metricsAddr 见方案 § 3.Step 1 决策 D3：三个后端统一 :9100。
+var metricsAddr = env.GetString("METRICS_ADDR", ":9100")
+
 func main() {
+	metrics.Register("driver-service")
+	startMetricsServer()
+
 	// Initialize Tracing
 	tracerCfg := tracing.Config{
 		ServiceName:    "driver-service",
@@ -89,4 +97,15 @@ func main() {
 	<-ctx.Done()
 	log.Println("Shutting down the server...")
 	grpcServer.GracefulStop()
+}
+
+func startMetricsServer() {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	go func() {
+		log.Printf("metrics server listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, mux); err != nil {
+			log.Printf("metrics server exited: %v", err)
+		}
+	}()
 }
