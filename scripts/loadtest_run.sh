@@ -78,11 +78,12 @@ case "${ROUND}" in
       "${ROOT}/loadtest/k6/scenarios/smoke.js"
     ;;
   2)
-    log "Round 2 Baseline：全流量，不启 chaos"
+    log "Round 2 Baseline：全流量，不启 chaos (K6_SCALE=${K6_SCALE:-1})"
     "${K6}" run \
       -o "experimental-prometheus-rw=${PROM_URL}/api/v1/write" \
       --env "GATEWAY_URL=${GATEWAY_URL}" \
       --env "K6_PROFILE=baseline" \
+      --env "K6_SCALE=${K6_SCALE:-1}" \
       --summary-export="${SUMMARY_FILE}" \
       "${ROOT}/loadtest/k6/scenarios/concert.js"
     ;;
@@ -101,6 +102,7 @@ case "${ROUND}" in
       -o "experimental-prometheus-rw=${PROM_URL}/api/v1/write" \
       --env "GATEWAY_URL=${GATEWAY_URL}" \
       --env "K6_PROFILE=chaos" \
+      --env "K6_SCALE=${K6_SCALE:-1}" \
       --summary-export="${SUMMARY_FILE}" \
       "${ROOT}/loadtest/k6/scenarios/concert.js"
     ;;

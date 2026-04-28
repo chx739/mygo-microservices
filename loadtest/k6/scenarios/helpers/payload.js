@@ -31,11 +31,16 @@ export function randomConcertVenueCoord(radiusKm = 3) {
 // buildPreviewRequest 构造 POST /trip/preview 的 JSON body。
 // userID 允许为空字符串：未登录的 preview 也应该能走通（api-gateway 侧
 // /trip/preview 目前不挂 authRequired，但 body 里 userID 必填）。
+//
+// 字段名必须是 pickup / destination —— gateway types.go previewTripRequest
+// 用的就是这俩 JSON tag。Round 2 重跑前用过 startLocation / endLocation，
+// 解析失败 → 坐标默认 (0, 0) → trip-service 写出空 geometry → driver-service
+// GEO 查在 (0°N, 0°E) 大西洋 → trip_assigned_within_15s 永 0%。
 export function buildPreviewRequest(userID) {
   return {
     userID: userID,
-    startLocation: randomConcertVenueCoord(2),     // 起点：场馆 2km 内
-    endLocation: randomConcertVenueCoord(8),       // 终点：场馆 8km 范围
+    pickup: randomConcertVenueCoord(2),       // 起点：场馆 2km 内
+    destination: randomConcertVenueCoord(8),  // 终点：场馆 8km 范围
   };
 }
 

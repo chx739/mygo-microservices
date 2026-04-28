@@ -186,3 +186,52 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestStatusRecorderHijackerPassthrough 防回归：Round 2 重跑发现 statusRecorder
+// 没透传 http.Hijacker，导致所有 /ws/* 路由握手失败。
+// 这里启 httptest.Server，handler 内做 Hijack；handler 在 net/http 自己的
+// goroutine 里跑，结果通过 channel 同步给测试主 goroutine（避免 race，
+// 也避免在子 goroutine 里调 t.Fatalf 这种 testing 包不保证安全的用法）。
+func TestStatusRecorderHijackerPassthrough(t *testing.T) {
+	result := make(chan error, 1)
+	h := Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			result <- errIface
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			result <- err
+			return
+		}
+		_ = conn.Close()
+		result <- nil
+	}))
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// Hijack 之后连接被 close，client 通常返 EOF —— 不关心 err，只看 handler 那侧。
+	resp, err := http.Get(srv.URL + "/whatever")
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Hijack 透传失败：%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("handler 未走到 Hijack — middleware 拦了接口断言")
+	}
+}
+
+// errIface 单独成变量，避免在 handler goroutine 里构造 error 时引入 fmt 依赖；
+// 也让上面 select 里的对照逻辑更直接。
+var errIface = httpHijackError("ResponseWriter 未实现 http.Hijacker")
+
+type httpHijackError string
+
+func (e httpHijackError) Error() string { return string(e) }

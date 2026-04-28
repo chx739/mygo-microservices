@@ -11,7 +11,9 @@
 //
 // 自定义指标：
 //   - trip_assigned_within_15s (Rate)：rider 15s 内被分配到司机的比例（SLO 指标）；
-//   - attacker_blocked_by_bloom (Rate)：attacker 请求返回 404 的比例（Bloom 拦截率）。
+//   - attacker_blocked_by_bloom (Rate)：attacker 没拿到 200 的比例（防穿透成功率）。
+//     语义说明：原本只算 404=Bloom 命中，但高并发下 5xx/429/超时也是「攻击没成功」，
+//     因此统计口径用 status !== 200。Round 2 重跑发现纯 404 口径在 19× 流量下漏报为 53%。
 
 import http from "k6/http";
 import ws from "k6/ws";
@@ -38,35 +40,40 @@ const attackerBlockedByBloom = new Rate("attacker_blocked_by_bloom");
 // Profile 切换：默认 chaos，Round 2 run 时 --env K6_PROFILE=baseline。
 const profile = __ENV.K6_PROFILE || "chaos";
 
+// K6_SCALE 在弱机/单节点 minikube 上等比例缩流量（保留 17min 时间线，
+// 只动数值不动 scenario 结构）。Math.ceil 保证 SCALE 很小时也至少 1 VU。
+const SCALE = Number(__ENV.K6_SCALE || 1);
+const scaled = (n) => Math.max(1, Math.ceil(n * SCALE));
+
 export const options = {
   scenarios: {
     riders: {
       executor: "ramping-vus",
-      startVUs: 50,
+      startVUs: scaled(50),
       stages: [
-        { duration: "1m", target: 50 },    // 基线
-        { duration: "2m", target: 2000 },  // 爬升
-        { duration: "10m", target: 2000 }, // 峰值（Chaos Workflow 在此窗口内注入）
-        { duration: "2m", target: 300 },   // 回落
-        { duration: "2m", target: 50 },    // 恢复
+        { duration: "1m", target: scaled(50) },    // 基线
+        { duration: "2m", target: scaled(2000) },  // 爬升
+        { duration: "10m", target: scaled(2000) }, // 峰值（Chaos Workflow 在此窗口内注入）
+        { duration: "2m", target: scaled(300) },   // 回落
+        { duration: "2m", target: scaled(50) },    // 恢复
       ],
       exec: "riderFlow",
       gracefulRampDown: "10s",
     },
     drivers: {
       executor: "constant-vus",
-      vus: 800,
+      vus: scaled(800),
       duration: "17m",
       exec: "driverFlow",
       startTime: "30s", // 等 rider 有订单再让 driver 就位，避免空跑
     },
     attackers: {
       executor: "constant-arrival-rate",
-      rate: 500,
+      rate: scaled(500),
       timeUnit: "1s",
       duration: "17m",
-      preAllocatedVUs: 100,
-      maxVUs: 200,
+      preAllocatedVUs: scaled(100),
+      maxVUs: scaled(200),
       exec: "attackerFlow",
     },
   },
@@ -134,9 +141,17 @@ export function riderFlow() {
     return;
   }
 
-  // 3. WebSocket 连 /ws/riders，等 driver_assigned 事件，最多 15s。
-  //    超时记为未分配。成功进 true 分支。
-  const wsURL = BASE_URL.replace(/^http/, "ws") + "/ws/riders";
+  // 3. WebSocket 连 /ws/riders?userID=<id>，等 driver_assigned 事件，最多 15s。
+  //    gateway ws.go 用 r.URL.Query().Get("userID") 路由消息，没带就立刻关连接（166ms session）。
+  //    没有 userID 的旧 seed 记录直接记 false，不去试连。
+  if (!riderSession.userID) {
+    tripAssignedWithin15s.add(false);
+    sleep(1);
+    return;
+  }
+  const wsURL =
+    BASE_URL.replace(/^http/, "ws") +
+    `/ws/riders?userID=${encodeURIComponent(riderSession.userID)}`;
   let assigned = false;
   ws.connect(wsURL, { headers }, function (socket) {
     socket.setTimeout(() => socket.close(), 15000);
@@ -165,7 +180,17 @@ export function driverFlow() {
 
   // 司机只连 WebSocket 监听 trip_request，整个 scenario 持续 17min，
   // 每个 VU 的 ws 连接保持到脚本结束；ws.connect 是阻塞式的，回调里按事件处理。
-  const wsURL = BASE_URL.replace(/^http/, "ws") + "/ws/drivers";
+  // gateway ws.go:71-81 要求 userID + packageSlug 两个 query param 都非空。
+  // packageSlug 必须和 rider 选的 fare 一致：driver-service 用 packageSlug
+  // 作 GEO key 分区（services/driver-service/service.go:112-118），司机池
+  // 按 slug 隔离。riderFlow 取 previewRes.data.rideFares[0]，trip-service
+  // getBaseFares 顺序是 suv → sedan → van → luxury（service.go:248-260），
+  // 所以这里写死 "suv" 跟 riders 对齐。Round 2 重跑时 driver 用 luxury
+  // → "Found suitable drivers 0" → trip_assigned_within_15s 永 0%。
+  if (!driverSession.userID) return;
+  const wsURL =
+    BASE_URL.replace(/^http/, "ws") +
+    `/ws/drivers?userID=${encodeURIComponent(driverSession.userID)}&packageSlug=suv`;
   ws.connect(wsURL, { headers }, function (socket) {
     // 10 分钟后主动关连接，避免 VU 累积挂连接数爆。
     // 17min 外的 VU 让 k6 graceful 自己收。
@@ -180,19 +205,28 @@ export function driverFlow() {
       if (roll < 0.2) {
         return; // 超时分支：什么都不做
       }
-      // accept / decline 都是发一条 ws message 给服务端（WebSocket 约定）。
-      // 消息格式：{"type":"driver_response","action":"accept","tripID":"..."}
-      // 真实 tripID 从 msg 里 parse；失败就丢弃。
+      // 消息格式（gateway 的 QueueConsumer + TripEventData 决定）：
+      //   {"type":"driver.cmd.trip_request","data":{"trip":{"id":"...","userID":"...",...}}}
+      // 所以 tripID 在 data.trip.id；之前写死 data.tripID 取不到，driver 永远不回 accept。
       let tripID = "";
       try {
         const parsed = JSON.parse(msg);
-        tripID = parsed.tripID || parsed.trip_id || (parsed.data && parsed.data.tripID) || "";
+        tripID =
+          (parsed.data && parsed.data.trip && parsed.data.trip.id) ||
+          parsed.tripID ||
+          parsed.trip_id ||
+          "";
       } catch (_) {
         return;
       }
       if (!tripID) return;
+      // gateway ws.go:160 用 msgType 决定 RoutingKey；
+      // type 必须是 contracts.DriverCmdTripAccept / DriverCmdTripDecline
+      // ("driver.cmd.trip_accept" / "driver.cmd.trip_decline")。
+      // 之前用 "driver_response" 不在 switch 里，gateway 直接打 unknown 并丢。
       const action = roll < 0.7 ? "accept" : "decline";
-      socket.send(JSON.stringify({ type: "driver_response", action, tripID }));
+      const type = action === "accept" ? "driver.cmd.trip_accept" : "driver.cmd.trip_decline";
+      socket.send(JSON.stringify({ type, data: { tripID } }));
     });
   });
 }
@@ -208,13 +242,14 @@ export function attackerFlow() {
   const headers = authHeaders(attackerSession);
 
   // 伪造一个格式合法（24 位 hex）但大概率不存在的 tripID，打 GET /trip/:id。
-  // Bloom miss 预期返回 404，命中 = 被拦 = 指标 true。
+  // 任何非 200 都算「攻击未成功」：Bloom 命中→404、限流→429、上游错→5xx 都是防御生效。
+  // 只有 200 才意味着 Bloom 漏 + Mongo 真有这个 ID（数学上接近 0）。
   const fakeID = randomHexID(24);
   const res = http.get(`${BASE_URL}/trip/${fakeID}`, {
     headers,
     tags: { endpoint: "trip_get" },
   });
-  attackerBlockedByBloom.add(res.status === 404);
+  attackerBlockedByBloom.add(res.status !== 200);
 
   // 不 sleep：constant-arrival-rate 自己控速率，sleep 会拉低实际 rps。
 }

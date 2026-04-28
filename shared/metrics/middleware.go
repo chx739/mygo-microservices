@@ -8,6 +8,9 @@
 package metrics
 
 import (
+	"bufio"
+	"errors"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -62,6 +65,17 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 		s.status = http.StatusOK
 	}
 	return s.ResponseWriter.Write(b)
+}
+
+// Hijack 透传到底层 ResponseWriter，让 gorilla/websocket 等库能完成 HTTP→WS 升级。
+// 不实现这个方法时，/ws/* 路由会失败：`websocket: response does not implement http.Hijacker`，
+// Round 2 重跑就是这个 bug 让 trip_assigned_within_15s 永远 0%。
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("metrics.statusRecorder: underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return h.Hijack()
 }
 
 // Middleware 包装下游 handler，记录 HTTP 请求数与耗时。
