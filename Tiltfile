@@ -124,7 +124,7 @@ k8s_resource('web', port_forwards=3000, labels="frontend")
 
 ### Payment Service ###
 
-payment_compile_cmd = 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/payment-service ./services/payment-service/cmd/main.go'
+payment_compile_cmd = 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/payment-service ./services/payment-service/cmd'
 if os.name == 'nt':
   payment_compile_cmd = './infra/development/docker/payment-build.bat'
 

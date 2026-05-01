@@ -1,5 +1,7 @@
 # Microservices with Go starter project
 
+> 快速上手 / 面试复盘请看 [docs/TUTORIAL.md](docs/TUTORIAL.md) — 能力清单 / 代码阅读顺序 / 设计决策 / 10 题面试 Q&A / 简历表述 3 档。
+
 This is the Microservices with Go course project using Kubernetes for both local development and for production.
 
 The goal of this template is to provide a stable starting point for building microservices with Go. 

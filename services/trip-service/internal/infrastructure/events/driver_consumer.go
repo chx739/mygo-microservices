@@ -87,6 +87,21 @@ func (c *driverConsumer) Listen() error {
 
 		log.Printf("driver response received message: %+v", payload)
 
+		// 兜底：driver_assigned/decline 链路里 client 通常只发 { tripID }，
+		// driver 自己的 ID 由 gateway 通过 AmqpMessage.OwnerID 透传过来
+		// (services/api-gateway/ws.go:160-167)。如果 payload.Driver 没设
+		// 就用 OwnerID 重建一个最小 *pbd.Driver，避免 tryAcquireTripAcceptLock
+		// 因 driverID="" 直接 fail（Round 2 重跑暴露的 trip_accept 死路）。
+		if payload.Driver == nil || payload.Driver.GetId() == "" {
+			payload.Driver = &pbd.Driver{Id: message.OwnerID}
+		}
+		if payload.RiderID == "" {
+			// decline 路径 trip-service 拿 RiderID 找司机重投，缺失会 panic on Trip.UserID 缓存查询；
+			// gateway 同样把 driver userID 放在 OwnerID，不能直接当 rider，
+			// 所以这里依赖 GetTripByID 反查 trip.UserID。handleTripDeclined 内已自取，本函数不强填。
+			_ = payload.RiderID
+		}
+
 		switch msg.RoutingKey {
 		case contracts.DriverCmdTripAccept:
 			if err := c.handleTripAccepted(ctx, payload.TripID, payload.Driver); err != nil {
@@ -94,6 +109,11 @@ func (c *driverConsumer) Listen() error {
 				log.Printf("Failed to handle the trip accept: %v", err)
 				return err
 			}
+			// 没有 return nil 时会落到 fall-through 那条「unknown trip event」误报。
+			if err := messaging.MarkMessageProcessed(ctx, c.redis, claim.Key, driverConsumerProcessedMessageTTL); err != nil {
+				return err
+			}
+			return nil
 		case contracts.DriverCmdTripDecline:
 			if err := c.handleTripDeclined(ctx, payload.TripID, payload.RiderID); err != nil {
 				_ = messaging.ReleaseMessageProcessing(ctx, c.redis, claim.Key)
