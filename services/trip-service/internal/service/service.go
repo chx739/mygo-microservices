@@ -19,6 +19,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -26,20 +27,39 @@ const (
 	// 行程状态在短时间内读取频繁、写入较少，10 分钟是一个兼顾命中率与一致性的默认值。
 	tripCacheTTL = 10 * time.Minute
 
+	// localCacheTTL 是 L1 进程内缓存的 TTL。
+	// 故意取得很短（2s）：
+	//   1) UpdateTrip 主动 DEL L1 已经覆盖了"立即失效"的需求；TTL 只作为兜底，
+	//      防止某条写路径未来漏调 Del 留下永久脏数据。
+	//   2) 司机接单守卫等状态敏感读未 bypass L1，2s 窗口把潜在 stale 影响压到最小；
+	//      ③ Mongo CAS 仍是最终防线，2s 内的"误放行 + CAS 失败"代价是多空跑一次
+	//      Mongo round-trip，不双扣。
+	localCacheTTL = 2 * time.Second
+
 	// tripBloomFilterKey 是 Trip ID 布隆过滤器的 Redis key。
 	// 用于快速判断“请求的 tripID 是否可能存在”，减少无效请求穿透到 MongoDB。
 	tripBloomFilterKey = "bloom:trips"
 )
 
 type service struct {
-	repo domain.TripRepository
-	rdb  redis.UniversalClient
+	repo       domain.TripRepository
+	rdb        redis.UniversalClient
+	localCache *cache.LocalCache
+	// sfg 按 tripCacheKey 合并 GetTripByID 的"L2 miss → DB 回源 → 回填"段，
+	// 防止热点 key 在 L1+L2 同时过期时 N 个并发请求一起打 Mongo（缓存击穿）。
+	// 零值可用，无需在 NewService 初始化。
+	sfg singleflight.Group
 }
 
-func NewService(repo domain.TripRepository, redisClient redis.UniversalClient) *service {
+// NewService 构造 trip service。
+//
+// 参数 localCache 允许为 nil：传 nil 时跳过 L1，沿用原 L2(Redis)→DB 链路，
+// 用于不需要 L1 的测试场景与"无 L1 容量"的回归对照。
+func NewService(repo domain.TripRepository, redisClient redis.UniversalClient, localCache *cache.LocalCache) *service {
 	return &service{
-		repo: repo,
-		rdb:  redisClient,
+		repo:       repo,
+		rdb:        redisClient,
+		localCache: localCache,
 	}
 }
 
@@ -264,9 +284,32 @@ func getBaseFares() []*domain.RideFareModel {
 }
 
 func (s *service) GetTripByID(ctx context.Context, id string) (*domain.TripModel, error) {
-	// 缓存是可选能力：当 Redis 未注入时，保持原行为（直接回源仓储）。
+	cacheKey := tripCacheKey(id)
+
+	// L1（进程内 ristretto，nil safe）：命中直接返回，**不再查 Bloom/Redis/DB**。
+	// 论证：L1 命中蕴含此前曾走过完整 Bloom→Redis/DB 链路并把结果回填了进来，
+	// 所以"非法 ID / 布隆判否"等否定路径不可能命中 L1。
+	// 司机接单状态守卫读到 stale L1 的情形由 ③ Mongo CAS 兜底（不双扣），
+	// localCacheTTL=2s 限制 staleness 窗口（详见上方常量注释）。
+	if v, ok := s.localCache.Get(cacheKey); ok {
+		var t domain.TripModel
+		if json.Unmarshal(v, &t) == nil {
+			return &t, nil
+		}
+		// L1 反序列化失败 → 立即清掉，防止后续请求持续命中坏数据。
+		s.localCache.Del(cacheKey)
+	}
+
+	// L2/Bloom 是可选能力：当 Redis 未注入时，直接回源仓储（保留原行为）。
 	if s.rdb == nil {
-		return s.repo.GetTripByID(ctx, id)
+		t, err := s.repo.GetTripByID(ctx, id)
+		if err == nil && t != nil {
+			// 即便没有 L2，也尝试回填 L1（L1 不存在时 Set 是 no-op，安全）。
+			if b, mErr := json.Marshal(t); mErr == nil {
+				s.localCache.Set(cacheKey, b, localCacheTTL)
+			}
+		}
+		return t, err
 	}
 
 	// 先做一次 ObjectID 格式校验。
@@ -286,14 +329,14 @@ func (s *service) GetTripByID(ctx context.Context, id string) (*domain.TripModel
 		return nil, fmt.Errorf("trip not found: %s", id)
 	}
 
-	cacheKey := tripCacheKey(id)
-
-	// 第 1 步：优先读缓存。
-	// 命中则直接返回，避免重复访问 MongoDB。
+	// 第 1 步：优先读 L2 (Redis) 缓存。
+	// 命中则直接返回，避免重复访问 MongoDB；同时回填 L1。
 	cached, err := s.rdb.Get(ctx, cacheKey).Bytes()
 	if err == nil {
 		var cachedTrip domain.TripModel
 		if unmarshalErr := json.Unmarshal(cached, &cachedTrip); unmarshalErr == nil {
+			// L2 命中 → 回填 L1。
+			s.localCache.Set(cacheKey, cached, localCacheTTL)
 			return &cachedTrip, nil
 		}
 
@@ -305,30 +348,54 @@ func (s *service) GetTripByID(ctx context.Context, id string) (*domain.TripModel
 		log.Printf("trip cache get failed for %s: %v", id, err)
 	}
 
-	// 第 2 步：缓存未命中或缓存异常，回源数据库。
-	tripModel, repoErr := s.repo.GetTripByID(ctx, id)
-	if repoErr != nil || tripModel == nil {
-		return tripModel, repoErr
-	}
+	// 第 2 步：缓存未命中或异常 → 回源 DB。
+	// 用 singleflight 按 cacheKey 合并：N 个并发请求同一 tripID 时，
+	// 只有 leader 真正打 Mongo + 回填，其余 waiter 等同一份结果。
+	// 防的是 L1+L2 同时过期瞬间的缓存击穿。
+	//
+	// 注意：闭包返回 *TripModel 指针在 N 个 waiter 间共享，要求下游只读不 mutate。
+	// 经审计：grpc_handler.GetTrip 只 ToProto；driver_consumer 只读 Status/UserID/Marshal；
+	// 未来若有 mutate 调用方，需要在闭包返前 deepcopy。
+	v, err, _ := s.sfg.Do(cacheKey, func() (any, error) {
+		// double-check L2：waiter 醒来时 leader 可能已经回填完成。
+		if cached, gErr := s.rdb.Get(ctx, cacheKey).Bytes(); gErr == nil {
+			var t domain.TripModel
+			if uErr := json.Unmarshal(cached, &t); uErr == nil {
+				return &t, nil
+			}
+		}
 
-	// 通过 DB 命中的真实数据反哺布隆过滤器，避免过滤器位图长期不完整。
-	if bloomAddErr := cache.BloomAdd(ctx, s.rdb, tripBloomFilterKey, id); bloomAddErr != nil {
-		log.Printf("trip bloom add-after-hit failed for %s: %v", id, bloomAddErr)
-	}
+		// leader 真正回源数据库。
+		tripModel, repoErr := s.repo.GetTripByID(ctx, id)
+		if repoErr != nil || tripModel == nil {
+			return tripModel, repoErr
+		}
 
-	// 第 3 步：把回源结果写回缓存，提升后续请求命中率。
-	// 缓存写入失败不影响主流程，避免 Redis 问题放大成业务不可用。
-	marshalled, marshalErr := json.Marshal(tripModel)
-	if marshalErr != nil {
-		log.Printf("trip cache marshal failed for %s: %v", id, marshalErr)
+		// 反哺布隆过滤器，避免过滤器位图长期不完整。
+		if bloomAddErr := cache.BloomAdd(ctx, s.rdb, tripBloomFilterKey, id); bloomAddErr != nil {
+			log.Printf("trip bloom add-after-hit failed for %s: %v", id, bloomAddErr)
+		}
+
+		// 回填 L2 + L1。缓存写失败不影响主流程。
+		marshalled, marshalErr := json.Marshal(tripModel)
+		if marshalErr != nil {
+			log.Printf("trip cache marshal failed for %s: %v", id, marshalErr)
+			return tripModel, nil
+		}
+		if setErr := s.rdb.Set(ctx, cacheKey, marshalled, tripCacheTTL).Err(); setErr != nil {
+			log.Printf("trip cache set failed for %s: %v", id, setErr)
+		}
+		s.localCache.Set(cacheKey, marshalled, localCacheTTL)
+
 		return tripModel, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	if setErr := s.rdb.Set(ctx, cacheKey, marshalled, tripCacheTTL).Err(); setErr != nil {
-		log.Printf("trip cache set failed for %s: %v", id, setErr)
+	if v == nil {
+		return nil, nil
 	}
-
-	return tripModel, nil
+	return v.(*domain.TripModel), nil
 }
 
 func (s *service) UpdateTrip(ctx context.Context, tripID string, status string, driver *pbd.Driver) error {
@@ -336,13 +403,20 @@ func (s *service) UpdateTrip(ctx context.Context, tripID string, status string, 
 		return err
 	}
 
+	cacheKey := tripCacheKey(tripID)
+
 	// Trip 状态更新后，立即删除缓存，避免读取到旧状态。
 	// 采用“删除缓存”而不是“直接覆盖”，可避免不同写路径造成的缓存值分歧。
 	if s.rdb != nil {
-		if err := s.rdb.Del(ctx, tripCacheKey(tripID)).Err(); err != nil {
+		if err := s.rdb.Del(ctx, cacheKey).Err(); err != nil {
 			log.Printf("trip cache delete failed for %s: %v", tripID, err)
 		}
 	}
+
+	// **独立于 L2 DEL** 也删 L1：即便 Redis 报错也要本地失效，
+	// 否则 L1 会一直返回旧状态直到 localCacheTTL（2s）过期。
+	// nil safe：L1 未注入时为 no-op。
+	s.localCache.Del(cacheKey)
 
 	return nil
 }

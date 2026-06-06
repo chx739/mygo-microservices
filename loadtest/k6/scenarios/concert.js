@@ -62,7 +62,10 @@ export const options = {
     },
     drivers: {
       executor: "constant-vus",
-      vus: scaled(800),
+      // 控制变量实验：driver 固定 100，不随 K6_SCALE 缩放。
+      // 配合 K6_SCALE=0.1（rider 峰值 scaled(2000)=200），刻意做成 rider:driver=2:1
+      // 的轻载局，用于坐实"Round2 全量 trip_assigned 崩塌=单机饱和而非逻辑错"。
+      vus: 100,
       duration: "17m",
       exec: "driverFlow",
       startTime: "30s", // 等 rider 有订单再让 driver 就位，避免空跑
@@ -93,8 +96,17 @@ export function setup() {
 
 // ---------- riderFlow -------------------------------------------------------
 
-// 乘客流程：登录 → preview → start → 等 15s 看 driver_assigned。
+// 乘客流程：登录 → 先连 WS → 在 open 回调里 preview → start → 等 15s 看 driver_assigned。
 // 每个 VU 的 session 在首次调用时建立并缓存到 VU-global（k6 里就是模块顶层的 let）。
+//
+// 为什么 WS 必须先连（subscribe-after-publish 竞态修复）：
+// gateway 的 connManager.SendMessage 对未注册的 userID 直接 ErrConnectionNotFound
+// 丢消息，无离线缓冲（shared/messaging/connection_messager.go:78-91）。原来的
+// preview→start→connect 顺序下，SCALE 小时整条派单链路 <1s 跑完，driver_assigned
+// 在 rider 的 WS 注册进 connManager 之前就被丢掉 → trip_assigned 永远≈0（实测 0.74%）。
+// 真实手机 App 同样是开 App 即挂 WS、不是下单才连。故把 preview/start 移进
+// socket.on("open")：握手成功时 gateway 已 connManager.Add + 起 driver_assigned
+// 消费者（ws.go:33/43-49），此后再发 /trip/start 才不会漏接通知。
 let riderSession = null;
 
 export function riderFlow() {
@@ -103,67 +115,92 @@ export function riderFlow() {
   }
   const headers = authHeaders(riderSession);
 
-  // 1. preview。带 endpoint tag 分层看指标。
-  const previewRes = http.post(
-    `${BASE_URL}/trip/preview`,
-    JSON.stringify(buildPreviewRequest(riderSession.userID)),
-    { headers, tags: { endpoint: "preview" } }
-  );
-  const previewOK = check(previewRes, {
-    "preview 2xx": (r) => r.status >= 200 && r.status < 300,
-  });
-  if (!previewOK) {
-    // 思考时间内退出，别把失败的 VU 卡在这一轮。
-    sleep(0.5);
-    return;
-  }
-
-  // 从 preview 响应取 rideFareID。不同版本响应体略有差异，做两套兜底 path。
-  const fareID =
-    previewRes.json("data.rideFares.0.id") ||
-    previewRes.json("data.rideFares.0.ID") ||
-    "";
-
-  sleep(0.3 + Math.random() * 0.5); // 用户思考 300~800ms
-
-  // 2. start。限流 + 幂等锁都在 gateway 层，这里错误率是真实 SLO。
-  const startRes = http.post(
-    `${BASE_URL}/trip/start`,
-    JSON.stringify(buildTripStartRequest(riderSession.userID, fareID)),
-    { headers, tags: { endpoint: "start" } }
-  );
-  const startOK = check(startRes, {
-    "start 2xx": (r) => r.status >= 200 && r.status < 300,
-  });
-  if (!startOK) {
-    tripAssignedWithin15s.add(false);
-    sleep(1);
-    return;
-  }
-
-  // 3. WebSocket 连 /ws/riders?userID=<id>，等 driver_assigned 事件，最多 15s。
-  //    gateway ws.go 用 r.URL.Query().Get("userID") 路由消息，没带就立刻关连接（166ms session）。
-  //    没有 userID 的旧 seed 记录直接记 false，不去试连。
+  // 没有 userID 的旧 seed 记录：WS 路由依赖 userID，直接记 false 不试连（原语义）。
   if (!riderSession.userID) {
     tripAssignedWithin15s.add(false);
     sleep(1);
     return;
   }
+
   const wsURL =
     BASE_URL.replace(/^http/, "ws") +
     `/ws/riders?userID=${encodeURIComponent(riderSession.userID)}`;
+
+  // 这三个标志必须在 ws.connect 外层作用域，回调闭包写、连接返回后结算。
+  let opened = false; // WS 是否握手成功（false = WS 升级坏，必须暴露成失败，防 Hijacker 类回归被静默掩盖）
+  let startedOK = false; // start 2xx，才计入 trip_assigned 分母
+  let startFailed = false; // start 明确失败 → 记 false（对齐原语义）
   let assigned = false;
+
   ws.connect(wsURL, { headers }, function (socket) {
-    socket.setTimeout(() => socket.close(), 15000);
+    socket.on("open", () => {
+      opened = true;
+
+      // 1. preview。带 endpoint tag 分层看指标。
+      const previewRes = http.post(
+        `${BASE_URL}/trip/preview`,
+        JSON.stringify(buildPreviewRequest(riderSession.userID)),
+        { headers, tags: { endpoint: "preview" } }
+      );
+      const previewOK = check(previewRes, {
+        "preview 2xx": (r) => r.status >= 200 && r.status < 300,
+      });
+      if (!previewOK) {
+        // 对齐原语义：preview 失败不计入 trip_assigned 分母。
+        socket.close();
+        return;
+      }
+
+      // 从 preview 响应取 rideFareID。不同版本响应体略有差异，做两套兜底 path。
+      const fareID =
+        previewRes.json("data.rideFares.0.id") ||
+        previewRes.json("data.rideFares.0.ID") ||
+        "";
+
+      sleep(0.3 + Math.random() * 0.5); // 用户思考 300~800ms（此刻无下行消息，阻塞安全）
+
+      // 2. start。限流 + 幂等锁都在 gateway 层，这里错误率是真实 SLO。
+      const startRes = http.post(
+        `${BASE_URL}/trip/start`,
+        JSON.stringify(buildTripStartRequest(riderSession.userID, fareID)),
+        { headers, tags: { endpoint: "start" } }
+      );
+      const startOK = check(startRes, {
+        "start 2xx": (r) => r.status >= 200 && r.status < 300,
+      });
+      if (!startOK) {
+        startFailed = true;
+        socket.close();
+        return;
+      }
+
+      // 3. start 成功，开 15s 等待窗口看 driver_assigned。
+      startedOK = true;
+      socket.setTimeout(() => socket.close(), 15000);
+    });
+
     socket.on("message", (msg) => {
       if (typeof msg === "string" && msg.indexOf("driver_assigned") >= 0) {
         assigned = true;
         socket.close();
       }
     });
-    socket.on("close", () => {}); // 被 timeout 或主动关闭都走这
+
+    socket.on("close", () => {}); // timeout / 主动关 / preview|start 失败都走这
   });
-  tripAssignedWithin15s.add(assigned);
+
+  // ws.connect 阻塞返回后结算，严格保留原指标分支语义：
+  //   WS 没连上   → 记 false（真失败，必须暴露）
+  //   preview 失败 → 不记（不计入派单分母）
+  //   start 失败   → 记 false
+  //   start 成功   → 记 assigned
+  if (!opened) {
+    tripAssignedWithin15s.add(false);
+  } else if (startFailed) {
+    tripAssignedWithin15s.add(false);
+  } else if (startedOK) {
+    tripAssignedWithin15s.add(assigned);
+  }
 
   sleep(1);
 }

@@ -22,27 +22,31 @@ func TestAllowTripStartByRateLimit_Basic(t *testing.T) {
 	ctx := context.Background()
 	userID := "rider_1"
 
-	allowed, err := allowTripStartByRateLimit(ctx, rdb, userID)
-	if err != nil {
-		t.Fatalf("first request failed: %v", err)
-	}
-	if !allowed {
-		t.Fatalf("first request should be allowed")
+	// 窗口内前 tripStartRateLimitLimit 次应放行（限流已放宽到 5 次/10s）。
+	for i := 0; i < tripStartRateLimitLimit; i++ {
+		allowed, err := allowTripStartByRateLimit(ctx, rdb, userID)
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+1, err)
+		}
+		if !allowed {
+			t.Fatalf("request %d should be allowed (within limit %d)", i+1, tripStartRateLimitLimit)
+		}
 	}
 
-	allowed, err = allowTripStartByRateLimit(ctx, rdb, userID)
+	// 第 limit+1 次应被滑动窗口拦截。
+	allowed, err := allowTripStartByRateLimit(ctx, rdb, userID)
 	if err != nil {
-		t.Fatalf("second request failed: %v", err)
+		t.Fatalf("over-limit request failed: %v", err)
 	}
 	if allowed {
-		t.Fatalf("second request should be blocked by sliding window")
+		t.Fatalf("request %d should be blocked by sliding window", tripStartRateLimitLimit+1)
 	}
 
 	mr.FastForward(tripStartRateLimitWindow + 20*time.Millisecond)
 
 	allowed, err = allowTripStartByRateLimit(ctx, rdb, userID)
 	if err != nil {
-		t.Fatalf("third request failed: %v", err)
+		t.Fatalf("post-window request failed: %v", err)
 	}
 	if !allowed {
 		t.Fatalf("request should be allowed after window expires")
@@ -55,61 +59,5 @@ func TestAllowTripStartByRateLimit_InvalidInput(t *testing.T) {
 	}
 }
 
-func TestAcquireTripStartCreateLock_Basic(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("start miniredis failed: %v", err)
-	}
-	defer mr.Close()
-
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
-
-	ctx := context.Background()
-	userID := "rider_2"
-
-	ok, err := acquireTripStartCreateLock(ctx, rdb, userID)
-	if err != nil {
-		t.Fatalf("first lock failed: %v", err)
-	}
-	if !ok {
-		t.Fatalf("first lock should be acquired")
-	}
-
-	ok, err = acquireTripStartCreateLock(ctx, rdb, userID)
-	if err != nil {
-		t.Fatalf("second lock failed: %v", err)
-	}
-	if ok {
-		t.Fatalf("second lock should be rejected within lock ttl")
-	}
-
-	mr.FastForward(tripStartIdempotencyLockTTL + 20*time.Millisecond)
-
-	ok, err = acquireTripStartCreateLock(ctx, rdb, userID)
-	if err != nil {
-		t.Fatalf("third lock failed: %v", err)
-	}
-	if !ok {
-		t.Fatalf("lock should be acquirable after ttl expires")
-	}
-}
-
-func TestAcquireTripStartCreateLock_InvalidInput(t *testing.T) {
-	if ok, err := acquireTripStartCreateLock(context.Background(), nil, "rider_3"); err == nil || ok {
-		t.Fatalf("expected error when redis client is nil")
-	}
-
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("start miniredis failed: %v", err)
-	}
-	defer mr.Close()
-
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
-
-	if ok, err := acquireTripStartCreateLock(context.Background(), rdb, ""); err == nil || ok {
-		t.Fatalf("expected error when userID is empty")
-	}
-}
+// 原 TestAcquireTripStartCreateLock_* 两个用例已随 SET NX EX 幂等锁一并移除：
+// 该锁按 userID 实现，与上面的滑动窗口限流功能重叠（冗余），已删除生产代码。

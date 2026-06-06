@@ -24,7 +24,7 @@ func BenchmarkTripAcceptLock_Uncontended(b *testing.B) {
 		if err != nil {
 			b.Fatalf("tryAcquireTripAcceptLock failed: %v", err)
 		}
-		if !ok {
+		if !ok {	
 			b.Fatalf("first acquire on fresh tripID must succeed")
 		}
 	}

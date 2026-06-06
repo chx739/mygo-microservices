@@ -59,6 +59,10 @@ func main() {
 
 	log.Println("Starting RabbitMQ connection")
 
+	// 启动期统一起通知/命令队列消费者（单例，按 OwnerID 经全局 connManager 路由）。
+	// 取代原来 per-connection 起消费者的有损架构，见 ws.go startNotificationConsumers。
+	startNotificationConsumers(rabbitmq)
+
 	// 初始化 Redis（用于 Stripe webhook 幂等、限流、以及 JWT 黑/白名单）。
 	redisClient, err := NewRedisClient(ctx)
 	if err != nil {

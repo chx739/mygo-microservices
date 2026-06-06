@@ -210,6 +210,20 @@ func (c *driverConsumer) handleTripAccepted(ctx context.Context, tripID string, 
 		return fmt.Errorf("Trip was not found %s", tripID)
 	}
 
+	// 状态幂等守卫（fan-out 必需）：派单改 fan-out 后，同一 trip 会被多个司机
+	// 同时 accept。Redis 接单锁拦并发，但锁在本函数结束即 defer 释放——晚到的
+	// “输家” accept 会再次抢到锁走到这里。DB 层 UpdateTrip 的条件更新
+	// （filter status=pending，0 匹配返错）已能防双重派单/双扣款，但若让输家
+	// 走到 UpdateTrip 返错 → 本函数 return err → 消息被 requeue → fan-out 下
+	// 每单 N-1 个输家形成重投风暴/DLQ 洪水。这里提前判“已非 pending 即正常跳过”
+	// （return nil = ack 丢弃，不 requeue），把“别人已接”变成预期内结果。
+	// 罕见紧 race（此处读到仍 pending、UpdateTrip 才输）仍返 err 重投一次，
+	// 重投后本守卫命中 return nil，自愈且有界。
+	if trip.Status != "pending" {
+		log.Printf("trip %s already %s, skip duplicate accept by driver %s", tripID, trip.Status, driverID)
+		return nil
+	}
+
 	// 2. Update the trip
 	if err := c.service.UpdateTrip(ctx, tripID, "accepted", driver); err != nil {
 		log.Printf("Failed to update the trip: %v", err)

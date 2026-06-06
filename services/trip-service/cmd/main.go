@@ -11,6 +11,7 @@ import (
 	"ride-sharing/services/trip-service/internal/infrastructure/grpc"
 	"ride-sharing/services/trip-service/internal/infrastructure/repository"
 	"ride-sharing/services/trip-service/internal/service"
+	"ride-sharing/shared/cache"
 	"ride-sharing/shared/db"
 	"ride-sharing/shared/env"
 	"ride-sharing/shared/messaging"
@@ -69,8 +70,20 @@ func main() {
 	}
 	defer redisClient.Close()
 
+	// L1 进程内缓存（ristretto，TinyLFU 准入 + 采样 LRU）：
+	// numCounters=1e5（约容纳上限的 10×，让 TinyLFU 频次统计足够精确），
+	// MaxCost=16MiB 字节（cost=value 长度，单条 Trip JSON 约 KB 级，足够多副本）。
+	// 失败仅记日志不阻断启动——L1 是性能优化项，缺它仍可降级到 L2/DB。
+	localCache, lcErr := cache.NewLocalCache(1e5, 1<<24)
+	if lcErr != nil {
+		log.Printf("Failed to initialize local cache (L1 disabled): %v", lcErr)
+		localCache = nil // 显式 nil，下游所有 LocalCache 方法都是 nil safe。
+	} else {
+		defer localCache.Close()
+	}
+
 	mongoDBRepo := repository.NewMongoRepository(mongoDb)
-	svc := service.NewService(mongoDBRepo, redisClient)
+	svc := service.NewService(mongoDBRepo, redisClient, localCache)
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)

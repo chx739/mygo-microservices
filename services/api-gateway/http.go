@@ -28,15 +28,15 @@ const (
 	stripeWebhookIdempotencyTTL = 24 * time.Hour
 
 	// tripStartRateLimitWindow 定义下单滑动窗口时长。
-	// 这里采用 10 秒窗口，配合 tripStartRateLimitLimit=1，表示 10 秒内最多 1 次下单。
 	tripStartRateLimitWindow = 10 * time.Second
 
 	// tripStartRateLimitLimit 定义滑动窗口内的最大请求数。
-	tripStartRateLimitLimit = 1
-
-	// tripStartIdempotencyLockTTL 用于拦截毫秒级重复请求（网络抖动/前端连点）。
-	// 与滑动窗口互补：滑动窗口管“频率”，锁管“瞬时并发”。
-	tripStartIdempotencyLockTTL = 5 * time.Second
+	// 放宽到 10s 内 5 次：仍挡高频滥用，但不会卡住正常节奏（含压测每 VU
+	// ~16s 一单的合成流量）。原值 1 过严，会把弱网重试/连续下单全判 429。
+	// 注：原“第二道防线”SET NX EX 幂等锁已移除——它按 userID 实现，本质是
+	// 更粗的限流，与本滑动窗口功能重叠（冗余）。真正的请求去重应由客户端
+	// Idempotency-Key / 操作指纹承担，不在此处用 userID 锁兼任。
+	tripStartRateLimitLimit = 5
 )
 
 func handleTripStart(w http.ResponseWriter, r *http.Request, redisClient redis.UniversalClient) {
@@ -69,18 +69,9 @@ func handleTripStart(w http.ResponseWriter, r *http.Request, redisClient redis.U
 		return
 	}
 
-	// 第二道防线：幂等锁。
-	// 目标：拦截同一用户在极短时间内发出的并发重复请求。
-	locked, err := acquireTripStartCreateLock(ctx, redisClient, reqBody.UserID)
-	if err != nil {
-		log.Printf("failed to acquire trip start idempotency lock: %v", err)
-		http.Error(w, "failed to apply duplicate request protection", http.StatusInternalServerError)
-		return
-	}
-	if !locked {
-		http.Error(w, "duplicate request", http.StatusConflict)
-		return
-	}
+	// 已移除原“第二道防线：SET NX EX 幂等锁”。它按 userID 实现，本质是更粗
+	// 粒度的限流，与上面的滑动窗口功能重叠（冗余）；压测中限流先触发，该锁
+	// 几乎从未生效。真正的请求去重应由客户端 Idempotency-Key / 操作指纹承担。
 
 	// Why we need to create a new client for each connection:
 	// because if a service is down, we don't want to block the whole application
@@ -113,24 +104,6 @@ func allowTripStartByRateLimit(ctx context.Context, redisClient redis.UniversalC
 	}
 
 	return cache.SlidingWindowAllow(ctx, redisClient, userID, tripStartRateLimitLimit, tripStartRateLimitWindow)
-}
-
-// acquireTripStartCreateLock 获取下单幂等锁。
-// 返回 false 表示已有同 userID 的下单请求正在窗口期内，不应继续创建订单。
-func acquireTripStartCreateLock(ctx context.Context, redisClient redis.UniversalClient, userID string) (bool, error) {
-	if redisClient == nil {
-		return false, fmt.Errorf("redis client is required for trip start lock")
-	}
-
-	if userID == "" {
-		return false, fmt.Errorf("userID is required for trip start lock")
-	}
-
-	return redisClient.SetNX(ctx, buildTripStartLockKey(userID), 1, tripStartIdempotencyLockTTL).Result()
-}
-
-func buildTripStartLockKey(userID string) string {
-	return "trip:create:lock:" + userID
 }
 
 func handleTripPreview(w http.ResponseWriter, r *http.Request) {

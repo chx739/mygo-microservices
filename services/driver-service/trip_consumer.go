@@ -3,13 +3,19 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
-	"math/rand"
 	"ride-sharing/shared/contracts"
 	"ride-sharing/shared/messaging"
 
 	"github.com/rabbitmq/amqp091-go"
 )
+
+// maxFanoutCandidates 限制每单 trip_request 广播给多少个候选司机。
+// 取 2：结构顶 = 1−(1-p)^2 = 75%（司机 p=50% 接单），换取 2× 而非 5× 的
+// 后端消息放大，缓解单机 trip-service 在全候选 fan-out 下被压饱和的问题
+// （Round 2 全量 ~5 候选时 start p99 飙到 34s 即此故障）。
+const maxFanoutCandidates = 2
 
 type tripConsumer struct {
 	rabbitmq *messaging.RabbitMQ
@@ -87,23 +93,41 @@ func (c *tripConsumer) handleFindAndNotifyDrivers(ctx context.Context, payload m
 		return nil
 	}
 
-	// Get a random index from the matching drivers
-	randomIndex := rand.Intn(len(suitableIDs))
-
-	suitableDriverID := suitableIDs[randomIndex]
-
+	// Fan-out：向**前 maxFanoutCandidates(=2) 个**候选司机广播 trip_request，
+	// 谁先 accept 谁得（first-accept-wins）。trip-service driver_consumer 用
+	// Redis 接单锁 + DB 条件更新（status=pending）保证只有一个司机真正成单，
+	// 输家被状态幂等守卫静默跳过。
+	//
+	// 取代原“随机挑 1 个、不重试”：单发命中率受司机接单率天花板压制
+	// （50% 接单 → 派单成功率 ≤50%）；fan-out 2 个 → 结构上限升到 1−0.5²=75%，
+	// 同时把后端放大控制在 2×（而非全候选~5× 压垮单机 trip-service）。
+	//
+	// 单个司机 publish 失败只记日志并继续，不因一个坏司机拖垮整批；
+	// 仅当全部候选都 publish 失败才返回错误触发上层重试。
 	marshalledEvent, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 
-	// Notify the driver about a potential trip
-	if err := c.rabbitmq.PublishMessage(ctx, contracts.DriverCmdTripRequest, contracts.AmqpMessage{
-		OwnerID: suitableDriverID,
-		Data:    marshalledEvent,
-	}); err != nil {
-		log.Printf("Failed to publish message to exchange: %v", err)
-		return err
+	candidates := suitableIDs
+	if len(candidates) > maxFanoutCandidates {
+		candidates = candidates[:maxFanoutCandidates]
+	}
+
+	publishedCount := 0
+	for _, driverID := range candidates {
+		if err := c.rabbitmq.PublishMessage(ctx, contracts.DriverCmdTripRequest, contracts.AmqpMessage{
+			OwnerID: driverID,
+			Data:    marshalledEvent,
+		}); err != nil {
+			log.Printf("Failed to publish trip_request to driver %s: %v", driverID, err)
+			continue
+		}
+		publishedCount++
+	}
+
+	if publishedCount == 0 {
+		return fmt.Errorf("failed to publish trip_request to any of %d candidate drivers", len(candidates))
 	}
 
 	return nil
